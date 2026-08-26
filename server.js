@@ -100,10 +100,51 @@ QAYDALAR:
 
     let answerText = message.content.map(b => b.text || '').join('');
     let sourceType = 'answer';
+    let createdAction = null;
 
     if (deniedButRelevant) {
       answerText = 'Bu məlumat üçün icazəniz yoxdur.';
       sourceType = 'denied';
+    } else {
+      // Cavabda bir "ACTION" (məzuniyyət/ticket/xərc sorğusu) var mı yoxla
+      const actionMatch = answerText.match(/ACTION:\s*(\{.+\})\s*$/s);
+      if (actionMatch) {
+        try {
+          const actionData = JSON.parse(actionMatch[1]);
+          answerText = answerText.replace(/ACTION:\s*\{.+\}\s*$/s, '').trim();
+          sourceType = 'action';
+
+          // Real əməliyyat sorğusunu verilənlər bazasına yaz
+          const { data: savedAction, error: actionError } = await supabase
+            .from('action_requests')
+            .insert({
+              company_id: employee.company_id,
+              employee_id: employee.id,
+              type: actionData.type,
+              title: actionData.title,
+              detail: actionData.detail,
+              status: 'created'
+            })
+            .select()
+            .single();
+
+          if (!actionError && savedAction) {
+            createdAction = {
+              id: savedAction.id,
+              type: savedAction.type,
+              title: savedAction.title,
+              detail: savedAction.detail,
+              status: savedAction.status
+            };
+          }
+        } catch (e) {
+          console.error('Action parse xətası:', e.message);
+        }
+      } else {
+        // Adi SOURCE mənbəsini təmizlə (cavabın son sətrini saxlayırıq, sadəcə görünüşü təmizləyirik)
+        const sourceMatch = answerText.match(/SOURCE:\s*(.+)$/m);
+        if (sourceMatch && sourceMatch[1].trim() === 'NONE') sourceType = 'not_found';
+      }
     }
 
     // 7) Söhbəti logla (analitika/dashboard üçün)
@@ -115,7 +156,7 @@ QAYDALAR:
       source_type: sourceType
     });
 
-    res.json({ answer: answerText, employee: employee.name, role: employee.role });
+    res.json({ answer: answerText, employee: employee.name, role: employee.role, action: createdAction });
 
   } catch (err) {
     console.error(err);
