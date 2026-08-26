@@ -1,0 +1,18 @@
+{
+  "name": "vusera-employee-copilot-backend",
+  "version": "1.0.0",
+  "description": "VUSERA Employee Copilot — RAG backend (document ingestion, retrieval, Claude-powered answers with permissions)",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "ingest": "node ingest.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "@supabase/supabase-js": "^2.45.0",
+    "@anthropic-ai/sdk": "^0.27.0"
+  }
+}
