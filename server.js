@@ -62,7 +62,15 @@ app.post('/ask', async (req, res) => {
 
     // 4) İcazə süzgəcindən keçir — işçinin görə bilmədiyi sənədləri çıxar
     const allowedChunks = filterByPermission(matches || [], employee.role);
-    const deniedButRelevant = (matches || []).length > 0 && allowedChunks.length === 0;
+
+    // Əgər tapılan parçalar arasında məhdud (restricted) bir sənəd varsa,
+    // amma işçinin buna icazəsi yoxdursa — bu, "tapılmadı" yox, "icazə yoxdur" deməkdir.
+    // (Digər əlaqəsiz-amma-icazəli parçaların da tapılması bunu dəyişməməlidir.)
+    const deniedButRelevant = (matches || []).some(
+      chunk => chunk.restricted_to_roles
+        && chunk.restricted_to_roles.length > 0
+        && !chunk.restricted_to_roles.includes(employee.role)
+    );
 
     // 5) Kontekst mətnini hazırla
     const contextText = allowedChunks
