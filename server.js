@@ -248,10 +248,10 @@ ${contextText || '(bu sual üçün uyğun yeni sənəd tapılmadı — əvvəlki
 QAYDALAR:
 1. Yalnız yuxarıdakı parçalara əsaslan, uydurma.
 2. Əgər kontekst boşdursa və ya sual bununla əlaqəli deyilsə, "Bu məlumat mövcud bilik bazasında tapılmadı" de.
-3. Əgər istifadəçi bir əməliyyat istəyirsə (məzuniyyət/xərc/IT problemi), lazımi detalları topla və əməliyyatı təsdiqlə, sonunda: ACTION:{"type":"leave_request|it_ticket|expense_request","title":"...","detail":"...","priority":"low|normal|high","category":"..."}
-   - leave_request üçün category: "annual" | "sick" | "unpaid" | "emergency"
-   - it_ticket üçün category: "hardware" | "software" | "access" | "network"; priority: problemi ciddiliyinə görə seç (mes: "işləmir" = high, "yavaşdır" = normal)
-   - expense_request üçün category: "travel" | "meals" | "office" | "other"
+3. Əgər istifadəçi bir əməliyyat istəyirsə (məzuniyyət/xərc/IT problemi), lazımi detalları topla və əməliyyatı təsdiqlə, sonunda: ACTION:{"type":"leave_request|it_ticket|expense_request","title":"...","detail":"...","priority":"low|normal|high","category":"...","start_date":"YYYY-MM-DD","end_date":"YYYY-MM-DD"}
+   - leave_request üçün category: "annual" | "sick" | "unpaid" | "emergency"; start_date/end_date MÜTLƏQ doldurulmalıdır (il göstərilməsə, ${new Date().getFullYear()} il qəbul et)
+   - it_ticket üçün category: "hardware" | "software" | "access" | "network"; priority: problemi ciddiliyinə görə seç (mes: "işləmir" = high, "yavaşdır" = normal); start_date/end_date lazım deyil, boş buraxa bilərsən
+   - expense_request üçün category: "travel" | "meals" | "office" | "other"; start_date/end_date lazım deyil
 4. Adi cavab üçün sonunda: SOURCE: Sənəd adı — Section X.X
 5. Qısa, 2-4 cümlə.`;
 
@@ -296,6 +296,8 @@ QAYDALAR:
               detail: actionData.detail,
               priority: actionData.priority || 'normal',
               category: actionData.category || null,
+              start_date: actionData.start_date || null,
+              end_date: actionData.end_date || null,
               status: 'pending'
             })
             .select()
@@ -734,7 +736,9 @@ app.post('/actions/:id/approve', requireAuth, async (req, res) => {
         employeeName: updated.employees?.name,
         title: updated.title,
         detail: updated.detail,
-        approvedBy: approver.name
+        approvedBy: approver.name,
+        startDate: updated.start_date,
+        endDate: updated.end_date
       });
     }
 
