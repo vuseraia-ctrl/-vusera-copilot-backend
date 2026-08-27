@@ -258,15 +258,27 @@ QAYDALAR:
               status: savedAction.status
             };
 
-            // Öz departamentindəki managerlərə (və Admin-lərə) bildiriş göndər
-            const { data: managers } = await supabase
+            // Bildiriş kimə getməlidir? Əməliyyatın növünə görə düzgün departamentə yönləndiririk:
+            // - leave_request/expense_request -> işçinin öz departamentindəki manager
+            // - it_ticket -> IT departamentinin manageri (işçinin öz departamenti fərq etməz)
+            // Admin həmişə bildiriş alır.
+            const { data: allEmployees } = await supabase
               .from('employees')
-              .select('id, role, department_id')
+              .select('id, role, department_id, departments(name)')
               .eq('company_id', employee.company_id);
-            const toNotify = (managers || []).filter(m =>
-              m.id !== employee.id && (m.role === 'Admin' ||
-                (m.role.includes('Manager') && m.department_id === employee.department_id))
-            );
+
+            const targetDeptName = actionData.type === 'it_ticket' ? 'IT'
+              : actionData.type === 'expense_request' ? 'Finance'
+              : null; // leave_request -> işçinin öz departamenti
+
+            const toNotify = (allEmployees || []).filter(m => {
+              if (m.id === employee.id) return false;
+              if (m.role === 'Admin') return true;
+              if (!m.role.includes('Manager')) return false;
+              if (targetDeptName) return m.departments?.name === targetDeptName;
+              return m.department_id === employee.department_id; // leave_request halı
+            });
+
             for (const m of toNotify) {
               createNotification(employee.company_id, m.id,
                 `${employee.name} yeni bir ${actionData.type} yaratdı: "${actionData.title}"`, savedAction.id);
