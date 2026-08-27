@@ -7,6 +7,14 @@ export const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY
 );
 
+// Bu, istifadəçi girişini (login) yoxlamaq üçün ayrıca "public" açarla yaradılan clientdir.
+// Admin client (yuxarıdakı) hər şeyə giriş edə bilir, amma login/parol yoxlaması üçün
+// düzgün üsul, adi (anon) açarla işləyən bir client istifadə etməkdir.
+export const supabaseAuth = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_ANON_KEY
+);
+
 // Bir mətn parçasının embedding-ini (rəqəmsal "mənasını") Voyage AI ilə alır.
 // Bu, axtarış üçün lazımdır: oxşar mənalı mətnlər, oxşar embedding-lərə malik olur.
 export async function getEmbedding(text) {
