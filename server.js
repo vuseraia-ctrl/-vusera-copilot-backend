@@ -589,6 +589,24 @@ function isManagerRole(role) {
   return role.includes('Manager') || role === 'Admin';
 }
 
+// Bu manager, bu konkret sorğunu təsdiqləməyə/rəddə səlahiyyətlidirmi? (Admin həmişə bəli)
+async function canManageAction(approver, action) {
+  if (approver.role === 'Admin') return true;
+  if (!isManagerRole(approver.role)) return false;
+
+  if (action.type === 'it_ticket') {
+    const { data: dept } = await supabase.from('departments').select('name').eq('id', approver.department_id).single();
+    return dept?.name === 'IT';
+  }
+  if (action.type === 'expense_request') {
+    const { data: dept } = await supabase.from('departments').select('name').eq('id', approver.department_id).single();
+    return dept?.name === 'Finance';
+  }
+  // leave_request: sorğunu yaradan işçi ilə eyni departamentdə olmalıdır
+  const { data: requester } = await supabase.from('employees').select('department_id').eq('id', action.employee_id).single();
+  return requester?.department_id === approver.department_id;
+}
+
 app.post('/actions/:id/approve', async (req, res) => {
   try {
     const { approverId } = req.body;
@@ -597,8 +615,14 @@ app.post('/actions/:id/approve', async (req, res) => {
     const { data: approver, error: approverError } = await supabase
       .from('employees').select('*').eq('id', approverId).single();
     if (approverError || !approver) return res.status(404).json({ error: 'Təsdiqləyici tapılmadı' });
-    if (!isManagerRole(approver.role)) {
-      return res.status(403).json({ error: 'Yalnız manager/admin rolları təsdiqləyə bilər' });
+
+    const { data: actionCheck, error: actionCheckError } = await supabase
+      .from('action_requests').select('type, employee_id').eq('id', req.params.id).single();
+    if (actionCheckError || !actionCheck) return res.status(404).json({ error: 'Sorğu tapılmadı' });
+
+    const allowed = await canManageAction(approver, actionCheck);
+    if (!allowed) {
+      return res.status(403).json({ error: 'Bu sorğunu təsdiqləmək üçün icazəniz yoxdur (səlahiyyətli departament deyilsiniz)' });
     }
 
     const { data: updated, error: updateError } = await supabase
@@ -638,8 +662,14 @@ app.post('/actions/:id/reject', async (req, res) => {
     const { data: approver, error: approverError } = await supabase
       .from('employees').select('*').eq('id', approverId).single();
     if (approverError || !approver) return res.status(404).json({ error: 'Təsdiqləyici tapılmadı' });
-    if (!isManagerRole(approver.role)) {
-      return res.status(403).json({ error: 'Yalnız manager/admin rolları rədd edə bilər' });
+
+    const { data: actionCheck, error: actionCheckError } = await supabase
+      .from('action_requests').select('type, employee_id').eq('id', req.params.id).single();
+    if (actionCheckError || !actionCheck) return res.status(404).json({ error: 'Sorğu tapılmadı' });
+
+    const allowed = await canManageAction(approver, actionCheck);
+    if (!allowed) {
+      return res.status(403).json({ error: 'Bu sorğunu rədd etmək üçün icazəniz yoxdur (səlahiyyətli departament deyilsiniz)' });
     }
 
     const { data: updated, error: updateError } = await supabase
@@ -660,34 +690,44 @@ app.post('/actions/:id/reject', async (req, res) => {
 });
 
 // Şirkətin "pending" (gözləyən) sorğularını göstərir — Manager Dashboard üçün əsasdır.
-// Icazə qaydası: Admin -> bütün şirkəti görür. Manager -> yalnız öz departamentini görür. Employee -> görə bilməz.
+// Icazə qaydası: Admin -> bütün şirkəti görür.
+//   leave_request/expense_request-in növündən asılı olmayaraq, DÜZGÜN departamentin manageri görməlidir:
+//   - leave_request -> işçinin ÖZ departamentinin manageri (öz komandan)
+//   - it_ticket -> HƏMİŞƏ IT departamentinin manageri (kim yaratsa da fərq etməz)
+//   - expense_request -> HƏMİŞƏ Finance departamentinin manageri
 app.get('/pending-actions/:companyId', async (req, res) => {
   try {
     const { viewerId } = req.query;
     if (!viewerId) return res.status(400).json({ error: 'viewerId (?viewerId=...) tələb olunur' });
 
     const { data: viewer, error: viewerError } = await supabase
-      .from('employees').select('*').eq('id', viewerId).single();
+      .from('employees').select('*, departments(name)').eq('id', viewerId).single();
     if (viewerError || !viewer) return res.status(404).json({ error: 'İstifadəçi tapılmadı' });
 
     if (!isManagerRole(viewer.role)) {
       return res.status(403).json({ error: 'Yalnız manager/admin rolları gözləyən sorğuları görə bilər' });
     }
 
-    let query = supabase
+    const { data, error } = await supabase
       .from('action_requests')
       .select('*, employees!employee_id(name, role, department_id)')
       .eq('company_id', req.params.companyId)
       .eq('status', 'pending')
       .order('created_at', { ascending: false });
-
-    const { data, error } = await query;
     if (error) throw error;
 
-    // Admin hamısını görür. Manager isə yalnız öz departamentindəki işçilərin sorğularını görür.
-    const filtered = viewer.role === 'Admin'
-      ? data
-      : data.filter(action => action.employees?.department_id === viewer.department_id);
+    let filtered;
+    if (viewer.role === 'Admin') {
+      filtered = data; // Admin hər şeyi görür
+    } else {
+      const viewerDeptName = viewer.departments?.name;
+      filtered = data.filter(action => {
+        if (action.type === 'it_ticket') return viewerDeptName === 'IT';
+        if (action.type === 'expense_request') return viewerDeptName === 'Finance';
+        // leave_request və digər hallar: öz departamentinin manageri
+        return action.employees?.department_id === viewer.department_id;
+      });
+    }
 
     res.json(filtered);
   } catch (err) {
