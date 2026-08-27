@@ -222,6 +222,19 @@ app.post('/ask', askLimiter, requireAuth, async (req, res) => {
     }
     conversationMessages.push({ role: 'user', content: question });
 
+    // 3.6) Real "availability" yoxlaması — bu işçinin VERİLƏNLƏR BAZASINDAKI bütün
+    // gözləyən/təsdiqlənmiş məzuniyyət tarixlərini gətiririk (yalnız söhbət yaddaşına güvənmək əvəzinə)
+    const { data: existingLeaves } = await supabase
+      .from('action_requests')
+      .select('title, start_date, end_date, status')
+      .eq('employee_id', employeeId)
+      .eq('type', 'leave_request')
+      .in('status', ['pending', 'approved']);
+
+    const existingLeavesText = (existingLeaves && existingLeaves.length > 0)
+      ? existingLeaves.map(l => `- ${l.start_date} — ${l.end_date} (${l.status === 'approved' ? 'təsdiqlənib' : 'gözləyir'}): ${l.title}`).join('\n')
+      : '(bu işçinin heç bir aktiv məzuniyyət sorğusu yoxdur)';
+
     // 4) İcazə süzgəcindən keçir — işçinin görə bilmədiyi sənədləri çıxar
     const allowedChunks = filterByPermission(matches || [], employee.role);
 
@@ -245,11 +258,15 @@ app.post('/ask', askLimiter, requireAuth, async (req, res) => {
 Aşağıda bu sualla əlaqəli, sistemin indi tapdığı sənəd parçaları var (əgər söhbətin əvvəlki hissəsi varsa, onu da nəzərə al — məsələn "bəs neçə gün?" kimi davam sualları):
 ${contextText || '(bu sual üçün uyğun yeni sənəd tapılmadı — əvvəlki söhbətə əsaslana bilərsən, əks halda tapılmadığını de)'}
 
+MÖVCUD MƏZUNİYYƏT SORĞULARI (bu işçinin, verilənlər bazasından — real tarix üst-üstə düşməsini yoxlamaq üçün):
+${existingLeavesText}
+
 QAYDALAR:
 1. Yalnız yuxarıdakı parçalara əsaslan, uydurma.
 2. Əgər kontekst boşdursa və ya sual bununla əlaqəli deyilsə, "Bu məlumat mövcud bilik bazasında tapılmadı" de.
 3. ƏMƏLİYYAT (məzuniyyət/xərc/IT problemi) İKİ ADDIMLI PROSESDİR:
    ADDIM 1 (Təklif): İstifadəçi ilk dəfə bir iş görülməsini istəyəndə, lazımi məlumatı (tarix, məbləğ, problem) topla, XÜLASƏ ET və aydın şəkildə TƏSDİQ SORUŞ (məs: "Bunu təsdiqləyirsinizmi?"). Bu addımda HEÇ VAXT ACTION yazma.
+   ƏGƏR TİP leave_request-dirsə: aşağıdakı "MÖVCUD MƏZUNİYYƏT SORĞULARI" siyahısı ilə TARİX ÜST-ÜSTƏ DÜŞMƏSİNİ yoxla, üst-üstə düşmə varsa bunu AÇIQ şəkildə xəbərdarlıq et (təsdiq soruşarkən).
    ADDIM 2 (Təsdiq): Yalnız əgər söhbətin ƏVVƏLKİ sənin mesajında artıq təklif irəli sürmüsənsə VƏ istifadəçi indi "bəli/hə/təsdiqləyirəm/et" kimi razılıq bildirirsə, cavabının sonunda bunu yaz: ACTION:{"type":"leave_request|it_ticket|expense_request","title":"...","detail":"...","priority":"low|normal|high","category":"...","start_date":"YYYY-MM-DD","end_date":"YYYY-MM-DD"}
    İstifadəçi "yox" desə və ya fikrini dəyişsə, ACTION yazma, "Ləğv edildi" de.
    VACİB: ACTION marker-i yazırsansa, o, cavabının MÜTLƏQ SON HİSSƏSİ olmalıdır — ondan sonra HEÇ BİR söz, HEÇ BİR salamlama, HEÇ BİR emoji yazma.
