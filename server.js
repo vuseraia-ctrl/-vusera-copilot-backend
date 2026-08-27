@@ -248,7 +248,10 @@ ${contextText || '(bu sual üçün uyğun yeni sənəd tapılmadı — əvvəlki
 QAYDALAR:
 1. Yalnız yuxarıdakı parçalara əsaslan, uydurma.
 2. Əgər kontekst boşdursa və ya sual bununla əlaqəli deyilsə, "Bu məlumat mövcud bilik bazasında tapılmadı" de.
-3. Əgər istifadəçi bir əməliyyat istəyirsə (məzuniyyət/xərc/IT problemi), lazımi detalları topla və əməliyyatı təsdiqlə, sonunda: ACTION:{"type":"leave_request|it_ticket|expense_request","title":"...","detail":"...","priority":"low|normal|high","category":"...","start_date":"YYYY-MM-DD","end_date":"YYYY-MM-DD"}
+3. ƏMƏLİYYAT (məzuniyyət/xərc/IT problemi) İKİ ADDIMLI PROSESDİR:
+   ADDIM 1 (Təklif): İstifadəçi ilk dəfə bir iş görülməsini istəyəndə, lazımi məlumatı (tarix, məbləğ, problem) topla, XÜLASƏ ET və aydın şəkildə TƏSDİQ SORUŞ (məs: "Bunu təsdiqləyirsinizmi?"). Bu addımda HEÇ VAXT ACTION yazma.
+   ADDIM 2 (Təsdiq): Yalnız əgər söhbətin ƏVVƏLKİ sənin mesajında artıq təklif irəli sürmüsənsə VƏ istifadəçi indi "bəli/hə/təsdiqləyirəm/et" kimi razılıq bildirirsə, cavabının sonunda bunu yaz: ACTION:{"type":"leave_request|it_ticket|expense_request","title":"...","detail":"...","priority":"low|normal|high","category":"...","start_date":"YYYY-MM-DD","end_date":"YYYY-MM-DD"}
+   İstifadəçi "yox" desə və ya fikrini dəyişsə, ACTION yazma, "Ləğv edildi" de.
    - leave_request üçün category: "annual" | "sick" | "unpaid" | "emergency"; start_date/end_date MÜTLƏQ doldurulmalıdır (il göstərilməsə, ${new Date().getFullYear()} il qəbul et)
    - it_ticket üçün category: "hardware" | "software" | "access" | "network"; priority: problemi ciddiliyinə görə seç (mes: "işləmir" = high, "yavaşdır" = normal); start_date/end_date lazım deyil, boş buraxa bilərsən
    - expense_request üçün category: "travel" | "meals" | "office" | "other"; start_date/end_date lazım deyil
