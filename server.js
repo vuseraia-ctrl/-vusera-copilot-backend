@@ -289,6 +289,94 @@ app.get('/employees', async (req, res) => {
   res.json(data);
 });
 
+// Yeni işçi əlavə etmək (gələcək Admin panel üçün əsas)
+app.post('/employees', async (req, res) => {
+  try {
+    const { companyId, departmentId, name, email, role } = req.body;
+    if (!companyId || !name || !role) {
+      return res.status(400).json({ error: 'companyId, name və role tələb olunur' });
+    }
+    const { data, error } = await supabase
+      .from('employees')
+      .insert({ company_id: companyId, department_id: departmentId || null, name, email: email || null, role })
+      .select()
+      .single();
+    if (error) throw error;
+    res.json({ success: true, employee: data });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// İşçi məlumatını dəyişmək (ad, rol, departament)
+app.put('/employees/:id', async (req, res) => {
+  try {
+    const { name, role, departmentId, status } = req.body;
+    const updates = {};
+    if (name) updates.name = name;
+    if (role) updates.role = role;
+    if (departmentId) updates.department_id = departmentId;
+    if (status) updates.status = status;
+
+    const { data, error } = await supabase
+      .from('employees')
+      .update(updates)
+      .eq('id', req.params.id)
+      .select()
+      .single();
+    if (error) throw error;
+    res.json({ success: true, employee: data });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// İşçini deaktiv etmək (silmək əvəzinə — tarixçəni qorumaq üçün status dəyişdiririk)
+app.delete('/employees/:id', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('employees')
+      .update({ status: 'inactive' })
+      .eq('id', req.params.id)
+      .select()
+      .single();
+    if (error) throw error;
+    res.json({ success: true, employee: data });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Yeni şirkət (workspace) yaratmaq — hər müştəri üçün ayrıca mühit
+app.post('/companies', async (req, res) => {
+  try {
+    const { name } = req.body;
+    if (!name) return res.status(400).json({ error: 'name tələb olunur' });
+    const { data, error } = await supabase.from('companies').insert({ name }).select().single();
+    if (error) throw error;
+    res.json({ success: true, company: data });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Şirkət üçün departament yaratmaq
+app.post('/departments', async (req, res) => {
+  try {
+    const { companyId, name } = req.body;
+    if (!companyId || !name) return res.status(400).json({ error: 'companyId və name tələb olunur' });
+    const { data, error } = await supabase
+      .from('departments')
+      .insert({ company_id: companyId, name })
+      .select()
+      .single();
+    if (error) throw error;
+    res.json({ success: true, department: data });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Şirkət sənədləri
 app.get('/documents/:companyId', async (req, res) => {
   const { data, error } = await supabase
