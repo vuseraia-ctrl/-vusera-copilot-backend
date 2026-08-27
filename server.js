@@ -932,18 +932,6 @@ app.get('/dashboard/:companyId', requireAuth, async (req, res) => {  try {
   }
 });
 
-// Naməlum yol (route) üçün aydın xəta — DİQQƏT: bu, həmişə BÜTÜN route-lardan SONRA olmalıdır!
-app.use((req, res) => {
-  res.status(404).json({ error: 'Bu ünvan tapılmadı' });
-});
-
-// Ən son, gözlənilməz bütün xətalar üçün ümumi tutucu (server çökməsin deyə)
-app.use((err, req, res, next) => {
-  console.error('Gözlənilməz xəta:', err);
-  res.status(500).json({ error: 'Daxili server xətası baş verdi' });
-});
-
-const PORT = process.env.PORT || 3000;
 // ---- Proaktiv AI: Gözləyən sorğular üçün xatırlatmalar ----
 // Bu endpoint xaricdən (Make.com-un "scheduled" — gündəlik) çağırılmalıdır.
 // 2 gündən çox gözləyən sorğular üçün: manager-ə "hələ baxılmayıb" xatırlatması,
@@ -965,12 +953,10 @@ app.post('/proactive/check-reminders', async (req, res) => {
       const emp = reqItem.employees;
       if (!emp) continue;
 
-      // İşçiyə: "sorğunuz hələ gözləyir"
       await createNotification(emp.company_id, emp.id,
         `⏳ Xatırlatma: "${reqItem.title}" sorğunuz hələ gözləyir (${Math.floor((Date.now() - new Date(reqItem.created_at)) / (24*60*60*1000))} gündür).`,
         reqItem.id);
 
-      // Uyğun managerlərə: "gözləyən bir sorğu var, baxılmayıb"
       const targetDept = reqItem.type === 'it_ticket' ? 'IT'
         : reqItem.type === 'expense_request' ? 'Finance'
         : reqItem.type === 'leave_request' ? 'HR'
@@ -1002,6 +988,16 @@ app.post('/proactive/check-reminders', async (req, res) => {
   }
 });
 
+// Naməlum yol (route) üçün aydın xəta — DİQQƏT: bu, həmişə BÜTÜN route-lardan SONRA olmalıdır!
+app.use((req, res) => {
+  res.status(404).json({ error: 'Bu ünvan tapılmadı' });
+});
 
+// Ən son, gözlənilməz bütün xətalar üçün ümumi tutucu (server çökməsin deyə)
+app.use((err, req, res, next) => {
+  console.error('Gözlənilməz xəta:', err);
+  res.status(500).json({ error: 'Daxili server xətası baş verdi' });
+});
 
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 VUSERA Copilot API ${PORT} portunda işləyir`));
