@@ -15,7 +15,35 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// JSON formatı səhv olan sorğular üçün aydın xəta
+app.use((err, req, res, next) => {
+  if (err.type === 'entity.parse.failed') {
+    return res.status(400).json({ error: 'Göndərilən JSON formatı səhvdir' });
+  }
+  next(err);
+});
+
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+// Sadə UUID format yoxlaması (yanlış ID-lərə aydın xəta vermək üçün)
+function isValidUUID(str) {
+  return typeof str === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
+}
+
+// Make.com-a "webhook" bildirişi göndərir (məsələn təsdiqlənən məzuniyyəti Google Calendar-a yazmaq üçün).
+// Bu, "fire-and-forget"dir — uğursuz olsa belə əsas cavabı gecikdirmir və ya pozmur.
+async function notifyMake(payload) {
+  if (!process.env.MAKE_WEBHOOK_URL) return; // qurulmayıbsa, sakitcə keç
+  try {
+    await fetch(process.env.MAKE_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+  } catch (e) {
+    console.error('Make.com bildirişi göndərilmədi:', e.message);
+  }
+}
 
 // ---- Sadə API açarı yoxlaması (tam authentication deyil, amma təsadüfi sorğulara qarşı maneədir) ----
 // Real login sistemi qurulana qədər, hər sorğu bu gizli açarı bilməlidir.
@@ -52,6 +80,15 @@ app.post('/ask', async (req, res) => {
     if (!employeeId || !question) {
       return res.status(400).json({ error: 'employeeId və question tələb olunur' });
     }
+    if (!isValidUUID(employeeId)) {
+      return res.status(400).json({ error: 'employeeId düzgün formatda deyil' });
+    }
+    if (typeof question !== 'string' || question.trim().length === 0) {
+      return res.status(400).json({ error: 'question boş ola bilməz' });
+    }
+    if (question.length > 2000) {
+      return res.status(400).json({ error: 'Sual çox uzundur (maksimum 2000 simvol)' });
+    }
 
     // 1) İşçini tap (rol, şirkət)
     const { data: employee, error: empError } = await supabase
@@ -62,7 +99,13 @@ app.post('/ask', async (req, res) => {
     if (empError || !employee) return res.status(404).json({ error: 'İşçi tapılmadı' });
 
     // 2) Sualın embedding-ini yarat
-    const queryEmbedding = await getEmbedding(question);
+    let queryEmbedding;
+    try {
+      queryEmbedding = await getEmbedding(question);
+    } catch (e) {
+      console.error('Voyage AI xətası:', e.message);
+      return res.status(503).json({ error: 'Axtarış sistemi hazırda əlçatan deyil. Bir azdan yenidən cəhd edin.' });
+    }
 
     // 3) Vector axtarışı ilə ən oxşar 4 parçanı tap
     const { data: matches, error: matchError } = await supabase.rpc('match_chunks', {
@@ -122,12 +165,18 @@ QAYDALAR:
 5. Qısa, 2-4 cümlə.`;
 
     // 6) Claude-dan cavab al (söhbət tarixçəsi ilə birlikdə)
-    const message = await anthropic.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 500,
-      system: systemPrompt,
-      messages: conversationMessages
-    });
+    let message;
+    try {
+      message = await anthropic.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 500,
+        system: systemPrompt,
+        messages: conversationMessages
+      });
+    } catch (e) {
+      console.error('Anthropic API xətası:', e.message);
+      return res.status(503).json({ error: 'VUSERA hazırda cavab verə bilmir. Bir neçə saniyə sonra yenidən cəhd edin.' });
+    }
 
     let answerText = message.content.map(b => b.text || '').join('');
     let sourceType = 'answer';
@@ -343,9 +392,20 @@ app.post('/actions/:id/approve', async (req, res) => {
       .from('action_requests')
       .update({ status: 'approved', approved_by: approverId, approved_at: new Date().toISOString() })
       .eq('id', req.params.id)
-      .select()
+      .select('*, employees(name)')
       .single();
     if (updateError) throw updateError;
+
+    // Əgər bu bir məzuniyyət sorğusudursa, Make.com-a bildiriş göndər (məs: Google Calendar-a yazmaq üçün)
+    if (updated.type === 'leave_request') {
+      notifyMake({
+        event: 'leave_request_approved',
+        employeeName: updated.employees?.name,
+        title: updated.title,
+        detail: updated.detail,
+        approvedBy: approver.name
+      });
+    }
 
     res.json({ success: true, action: updated });
   } catch (err) {
@@ -413,6 +473,17 @@ app.get('/pending-actions/:companyId', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// Naməlum yol (route) üçün aydın xəta
+app.use((req, res) => {
+  res.status(404).json({ error: 'Bu ünvan tapılmadı' });
+});
+
+// Ən son, gözlənilməz bütün xətalar üçün ümumi tutucu (server çökməsin deyə)
+app.use((err, req, res, next) => {
+  console.error('Gözlənilməz xəta:', err);
+  res.status(500).json({ error: 'Daxili server xətası baş verdi' });
 });
 
 const PORT = process.env.PORT || 3000;
