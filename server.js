@@ -480,7 +480,7 @@ app.post('/actions/:id/approve', async (req, res) => {
       .from('action_requests')
       .update({ status: 'approved', approved_by: approverId, approved_at: new Date().toISOString() })
       .eq('id', req.params.id)
-      .select('*, employees(name)')
+      .select('*, employees:employee_id(name)')
       .single();
     if (updateError) throw updateError;
 
@@ -544,7 +544,7 @@ app.get('/pending-actions/:companyId', async (req, res) => {
 
     let query = supabase
       .from('action_requests')
-      .select('*, employees(name, role, department_id)')
+      .select('*, employees:employee_id(name, role, department_id)')
       .eq('company_id', req.params.companyId)
       .eq('status', 'pending')
       .order('created_at', { ascending: false });
