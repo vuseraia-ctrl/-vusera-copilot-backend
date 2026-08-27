@@ -17,6 +17,18 @@ app.use(express.json());
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+// ---- Sadə API açarı yoxlaması (tam authentication deyil, amma təsadüfi sorğulara qarşı maneədir) ----
+// Real login sistemi qurulana qədər, hər sorğu bu gizli açarı bilməlidir.
+function checkApiSecret(req, res, next) {
+  const provided = req.headers['x-api-secret'];
+  if (!process.env.API_SECRET) return next(); // .env-də təyin olunmayıbsa, keçir (development üçün)
+  if (provided !== process.env.API_SECRET) {
+    return res.status(401).json({ error: 'Etibarsız API açarı' });
+  }
+  next();
+}
+app.use(checkApiSecret);
+
 // ---- Köməkçi funksiyalar ----
 
 // Rolun "yüksək icazəli" olub-olmadığını yoxlayır (HR/Finance Manager, Admin)
