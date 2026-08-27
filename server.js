@@ -683,17 +683,6 @@ app.get('/pending-actions/:companyId', async (req, res) => {
   }
 });
 
-// Naməlum yol (route) üçün aydın xəta
-app.use((req, res) => {
-  res.status(404).json({ error: 'Bu ünvan tapılmadı' });
-});
-
-// Ən son, gözlənilməz bütün xətalar üçün ümumi tutucu (server çökməsin deyə)
-app.use((err, req, res, next) => {
-  console.error('Gözlənilməz xəta:', err);
-  res.status(500).json({ error: 'Daxili server xətası baş verdi' });
-});
-
 // Bildirişlər — istifadəçinin bütün bildirişlərini gətirir (yenilər əvvəldə)
 app.get('/notifications/:employeeId', async (req, res) => {
   const { data, error } = await supabase
@@ -747,6 +736,17 @@ app.get('/dashboard/:companyId', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// Naməlum yol (route) üçün aydın xəta — DİQQƏT: bu, həmişə BÜTÜN route-lardan SONRA olmalıdır!
+app.use((req, res) => {
+  res.status(404).json({ error: 'Bu ünvan tapılmadı' });
+});
+
+// Ən son, gözlənilməz bütün xətalar üçün ümumi tutucu (server çökməsin deyə)
+app.use((err, req, res, next) => {
+  console.error('Gözlənilməz xəta:', err);
+  res.status(500).json({ error: 'Daxili server xətası baş verdi' });
 });
 
 const PORT = process.env.PORT || 3000;
