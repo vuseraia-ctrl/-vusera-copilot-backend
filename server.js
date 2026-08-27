@@ -12,7 +12,7 @@ import rateLimit from 'express-rate-limit';
 import Anthropic from '@anthropic-ai/sdk';
 import pdfParse from 'pdf-parse';
 import mammoth from 'mammoth';
-import { supabase, getEmbedding, chunkDocument } from './lib.js';
+import { supabase, supabaseAuth, getEmbedding, chunkDocument } from './lib.js';
 
 const app = express();
 app.use(cors());
@@ -45,6 +45,60 @@ async function notifyMake(payload) {
     });
   } catch (e) {
     console.error('Make.com bildirişi göndərilmədi:', e.message);
+  }
+}
+
+// ---- REAL LOGIN sistemi ----
+
+// İstifadəçi email+parol ilə daxil olur, əvəzində bir "token" alır
+app.post('/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) return res.status(400).json({ error: 'email və password tələb olunur' });
+
+    const { data, error } = await supabaseAuth.auth.signInWithPassword({ email, password });
+    if (error) return res.status(401).json({ error: 'Email və ya parol yanlışdır' });
+
+    const { data: employee, error: empError } = await supabase
+      .from('employees')
+      .select('*, departments(name)')
+      .eq('auth_user_id', data.user.id)
+      .single();
+    if (empError || !employee) return res.status(404).json({ error: 'Bu istifadəçiyə bağlı işçi tapılmadı' });
+
+    res.json({
+      token: data.session.access_token,
+      employee: { id: employee.id, name: employee.name, role: employee.role, department: employee.departments?.name }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Bu, gələn "Bearer token"-i yoxlayır və hansı işçi olduğunu tapıb req.employee-yə yazır.
+// Bütün şəxsi/həssas endpoint-lər bunu tələb edir — artıq sadəcə ID bilməklə başqasının yerinə keçmək mümkün deyil.
+async function requireAuth(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Giriş tələb olunur (token yoxdur)' });
+  }
+  const token = authHeader.replace('Bearer ', '');
+
+  try {
+    const { data: userData, error: userError } = await supabaseAuth.auth.getUser(token);
+    if (userError || !userData?.user) return res.status(401).json({ error: 'Token etibarsızdır və ya vaxtı bitib' });
+
+    const { data: employee, error: empError } = await supabase
+      .from('employees')
+      .select('*, departments(name)')
+      .eq('auth_user_id', userData.user.id)
+      .single();
+    if (empError || !employee) return res.status(404).json({ error: 'İstifadəçiyə bağlı işçi tapılmadı' });
+
+    req.employee = employee;
+    next();
+  } catch (err) {
+    res.status(500).json({ error: 'Giriş yoxlaması uğursuz oldu' });
   }
 }
 
@@ -108,15 +162,10 @@ function filterByPermission(chunks, employeeRole) {
 
 // ---- Əsas endpoint: /ask ----
 
-app.post('/ask', askLimiter, async (req, res) => {
+app.post('/ask', askLimiter, requireAuth, async (req, res) => {
   try {
-    const { employeeId, question } = req.body;
-    if (!employeeId || !question) {
-      return res.status(400).json({ error: 'employeeId və question tələb olunur' });
-    }
-    if (!isValidUUID(employeeId)) {
-      return res.status(400).json({ error: 'employeeId düzgün formatda deyil' });
-    }
+    const { question } = req.body;
+    const employeeId = req.employee.id; // artıq body-dən deyil, dogrulanmış tokendən gəlir
     if (typeof question !== 'string' || question.trim().length === 0) {
       return res.status(400).json({ error: 'question boş ola bilməz' });
     }
@@ -315,8 +364,10 @@ QAYDALAR:
 // İki üsulla məzmun qəbul edir:
 //   1) "content" — sadə mətn (əvvəlki kimi)
 //   2) "fileBase64" + "fileType" ('pdf' və ya 'docx') — real fayldan mətn çıxarır
-app.post('/ingest', ingestLimiter, async (req, res) => {
+app.post('/ingest', ingestLimiter, requireAuth, async (req, res) => {
   try {
+    if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin sənəd yükləyə bilər' });
+
     const { companyId, title, docCode, content, fileBase64, fileType, restrictedRoles } = req.body;
     if (!companyId || !title) {
       return res.status(400).json({ error: 'companyId və title tələb olunur' });
@@ -397,28 +448,41 @@ app.get('/employees', async (req, res) => {
   res.json(data);
 });
 
-// Yeni işçi əlavə etmək (gələcək Admin panel üçün əsas)
-app.post('/employees', async (req, res) => {
+// Yeni işçi əlavə etmək (gələcək Admin panel üçün əsas) — AVTOMATIK giriş hesabı da yaradılır
+app.post('/employees', requireAuth, async (req, res) => {
   try {
+    if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin yeni işçi əlavə edə bilər' });
+
     const { companyId, departmentId, name, email, role } = req.body;
-    if (!companyId || !name || !role) {
-      return res.status(400).json({ error: 'companyId, name və role tələb olunur' });
+    if (!companyId || !name || !role || !email) {
+      return res.status(400).json({ error: 'companyId, name, email və role tələb olunur' });
     }
+
+    // Müvəqqəti parol yaradırıq — işçi ilk girişdən sonra "Parolu unutmuşam" ilə öz parolunu təyin edə bilər
+    const tempPassword = 'Vusera' + Math.random().toString(36).slice(-8) + '!';
+
+    const { data: authUser, error: authError } = await supabase.auth.admin.createUser({
+      email, password: tempPassword, email_confirm: true
+    });
+    if (authError) return res.status(400).json({ error: 'Giriş hesabı yaradıla bilmədi: ' + authError.message });
+
     const { data, error } = await supabase
       .from('employees')
-      .insert({ company_id: companyId, department_id: departmentId || null, name, email: email || null, role })
+      .insert({ company_id: companyId, department_id: departmentId || null, name, email, role, auth_user_id: authUser.user.id })
       .select()
       .single();
     if (error) throw error;
-    res.json({ success: true, employee: data });
+
+    res.json({ success: true, employee: data, temporaryPassword: tempPassword });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
 // İşçi məlumatını dəyişmək (ad, rol, departament)
-app.put('/employees/:id', async (req, res) => {
+app.put('/employees/:id', requireAuth, async (req, res) => {
   try {
+    if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin işçi məlumatını dəyişə bilər' });
     const { name, role, departmentId, status } = req.body;
     const updates = {};
     if (name) updates.name = name;
@@ -440,8 +504,9 @@ app.put('/employees/:id', async (req, res) => {
 });
 
 // İşçini deaktiv etmək (silmək əvəzinə — tarixçəni qorumaq üçün status dəyişdiririk)
-app.delete('/employees/:id', async (req, res) => {
+app.delete('/employees/:id', requireAuth, async (req, res) => {
   try {
+    if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin işçini deaktiv edə bilər' });
     const { data, error } = await supabase
       .from('employees')
       .update({ status: 'inactive' })
@@ -508,8 +573,9 @@ app.get('/documents/:companyId', async (req, res) => {
 });
 
 // Sənəd məlumatını yeniləmək (ad, kod, icazələr — məzmunu dəyişmək üçün silib yenidən yükləyin)
-app.put('/documents/:id', async (req, res) => {
+app.put('/documents/:id', requireAuth, async (req, res) => {
   try {
+    if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin sənədi dəyişə bilər' });
     const { title, docCode, restrictedRoles } = req.body;
     const updates = {};
     if (title) updates.title = title;
@@ -530,8 +596,9 @@ app.put('/documents/:id', async (req, res) => {
 });
 
 // Sənədi tamamilə silmək (bütün parçaları/embedding-ləri də silinir — cascade)
-app.delete('/documents/:id', async (req, res) => {
+app.delete('/documents/:id', requireAuth, async (req, res) => {
   try {
+    if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin sənədi silə bilər' });
     const { error } = await supabase.from('documents').delete().eq('id', req.params.id);
     if (error) throw error;
     res.json({ success: true, message: 'Sənəd və bütün parçaları silindi' });
@@ -541,8 +608,9 @@ app.delete('/documents/:id', async (req, res) => {
 });
 
 // Audit Log — kim, nə vaxt, nə edib (söhbətlər + əməliyyatlar birləşdirilmiş xronoloji siyahı)
-app.get('/audit-log/:companyId', async (req, res) => {
+app.get('/audit-log/:companyId', requireAuth, async (req, res) => {
   try {
+    if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin audit logu görə bilər' });
     const limit = parseInt(req.query.limit) || 50;
 
     const [{ data: chats, error: chatsError }, { data: actions, error: actionsError }] = await Promise.all([
@@ -600,11 +668,12 @@ app.get('/audit-log/:companyId', async (req, res) => {
   }
 });
 
-app.get('/actions/:employeeId', async (req, res) => {
+// İşçinin ÖZ sorğularını göstərir (URL-dəki ID-yə deyil, təsdiqlənmiş tokenə əsaslanır)
+app.get('/actions/me', requireAuth, async (req, res) => {
   const { data, error } = await supabase
     .from('action_requests')
     .select('*')
-    .eq('employee_id', req.params.employeeId)
+    .eq('employee_id', req.employee.id)
     .order('created_at', { ascending: false });
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
@@ -632,14 +701,9 @@ async function canManageAction(approver, action) {
   return dept?.name === targetDept;
 }
 
-app.post('/actions/:id/approve', async (req, res) => {
+app.post('/actions/:id/approve', requireAuth, async (req, res) => {
   try {
-    const { approverId } = req.body;
-    if (!approverId) return res.status(400).json({ error: 'approverId tələb olunur' });
-
-    const { data: approver, error: approverError } = await supabase
-      .from('employees').select('*').eq('id', approverId).single();
-    if (approverError || !approver) return res.status(404).json({ error: 'Təsdiqləyici tapılmadı' });
+    const approver = req.employee;
 
     const { data: actionCheck, error: actionCheckError } = await supabase
       .from('action_requests').select('type, employee_id').eq('id', req.params.id).single();
@@ -652,7 +716,7 @@ app.post('/actions/:id/approve', async (req, res) => {
 
     const { data: updated, error: updateError } = await supabase
       .from('action_requests')
-      .update({ status: 'approved', approved_by: approverId, approved_at: new Date().toISOString() })
+      .update({ status: 'approved', approved_by: approver.id, approved_at: new Date().toISOString() })
       .eq('id', req.params.id)
       .select('*, employees!employee_id(name)')
       .single();
@@ -679,14 +743,10 @@ app.post('/actions/:id/approve', async (req, res) => {
   }
 });
 
-app.post('/actions/:id/reject', async (req, res) => {
+app.post('/actions/:id/reject', requireAuth, async (req, res) => {
   try {
-    const { approverId, reason } = req.body;
-    if (!approverId) return res.status(400).json({ error: 'approverId tələb olunur' });
-
-    const { data: approver, error: approverError } = await supabase
-      .from('employees').select('*').eq('id', approverId).single();
-    if (approverError || !approver) return res.status(404).json({ error: 'Təsdiqləyici tapılmadı' });
+    const { reason } = req.body;
+    const approver = req.employee;
 
     const { data: actionCheck, error: actionCheckError } = await supabase
       .from('action_requests').select('type, employee_id').eq('id', req.params.id).single();
@@ -699,7 +759,7 @@ app.post('/actions/:id/reject', async (req, res) => {
 
     const { data: updated, error: updateError } = await supabase
       .from('action_requests')
-      .update({ status: 'rejected', approved_by: approverId, approved_at: new Date().toISOString(), rejection_reason: reason || null })
+      .update({ status: 'rejected', approved_by: approver.id, approved_at: new Date().toISOString(), rejection_reason: reason || null })
       .eq('id', req.params.id)
       .select()
       .single();
@@ -720,14 +780,9 @@ app.post('/actions/:id/reject', async (req, res) => {
 //   - leave_request -> işçinin ÖZ departamentinin manageri (öz komandan)
 //   - it_ticket -> HƏMİŞƏ IT departamentinin manageri (kim yaratsa da fərq etməz)
 //   - expense_request -> HƏMİŞƏ Finance departamentinin manageri
-app.get('/pending-actions/:companyId', async (req, res) => {
+app.get('/pending-actions/:companyId', requireAuth, async (req, res) => {
   try {
-    const { viewerId } = req.query;
-    if (!viewerId) return res.status(400).json({ error: 'viewerId (?viewerId=...) tələb olunur' });
-
-    const { data: viewer, error: viewerError } = await supabase
-      .from('employees').select('*, departments(name)').eq('id', viewerId).single();
-    if (viewerError || !viewer) return res.status(404).json({ error: 'İstifadəçi tapılmadı' });
+    const viewer = req.employee;
 
     if (!isManagerRole(viewer.role)) {
       return res.status(403).json({ error: 'Yalnız manager/admin rolları gözləyən sorğuları görə bilər' });
@@ -760,12 +815,12 @@ app.get('/pending-actions/:companyId', async (req, res) => {
   }
 });
 
-// Bildirişlər — istifadəçinin bütün bildirişlərini gətirir (yenilər əvvəldə)
-app.get('/notifications/:employeeId', async (req, res) => {
+// Bildirişlər — istifadəçinin ÖZ bildirişlərini gətirir (tokendən müəyyən edilir)
+app.get('/notifications/me', requireAuth, async (req, res) => {
   const { data, error } = await supabase
     .from('notifications')
     .select('*')
-    .eq('employee_id', req.params.employeeId)
+    .eq('employee_id', req.employee.id)
     .order('created_at', { ascending: false })
     .limit(30);
   if (error) return res.status(500).json({ error: error.message });
@@ -773,7 +828,7 @@ app.get('/notifications/:employeeId', async (req, res) => {
 });
 
 // Bir bildirişi "oxunmuş" kimi işarələmək
-app.post('/notifications/:id/read', async (req, res) => {
+app.post('/notifications/:id/read', requireAuth, async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('notifications')
@@ -789,8 +844,9 @@ app.post('/notifications/:id/read', async (req, res) => {
 });
 
 // Şirkət üçün ümumi statistika — Admin Dashboard-un əsası
-app.get('/dashboard/:companyId', async (req, res) => {
+app.get('/dashboard/:companyId', requireAuth, async (req, res) => {
   try {
+    if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin dashboard-u görə bilər' });
     const companyId = req.params.companyId;
 
     const [
