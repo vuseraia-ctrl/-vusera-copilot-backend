@@ -48,6 +48,26 @@ async function notifyMake(payload) {
   }
 }
 
+// Gmail-dən son emailları oxuyur (Make.com vasitəsilə, sinxron sorğu ilə)
+async function readRecentEmails() {
+  if (!process.env.MAKE_EMAIL_READ_URL) return [];
+  try {
+    const response = await fetch(process.env.MAKE_EMAIL_READ_URL);
+    const data = await response.json();
+    return data.emails || [];
+  } catch (e) {
+    console.error('Emaillər oxuna bilmədi:', e.message);
+    return [];
+  }
+}
+
+// Sualın email haqqında olub-olmadığını sadəcə açar sözlərlə yoxlayır
+function isEmailRelated(question) {
+  const keywords = ['email', 'e-mail', 'e-poçt', 'epoçt', 'poçt', 'məktub', 'inbox', 'gələn qutu'];
+  const lower = question.toLowerCase();
+  return keywords.some(k => lower.includes(k));
+}
+
 // ---- REAL LOGIN sistemi ----
 
 // İstifadəçi email+parol ilə daxil olur, əvəzində bir "token" alır
@@ -235,6 +255,15 @@ app.post('/ask', askLimiter, requireAuth, async (req, res) => {
       ? existingLeaves.map(l => `- ${l.start_date} — ${l.end_date} (${l.status === 'approved' ? 'təsdiqlənib' : 'gözləyir'}): ${l.title}`).join('\n')
       : '(bu işçinin heç bir aktiv məzuniyyət sorğusu yoxdur)';
 
+    // 3.7) Əgər sual email haqqındadırsa, real inbox-u oxu
+    let emailsText = '';
+    if (isEmailRelated(question)) {
+      const emails = await readRecentEmails();
+      emailsText = emails.length > 0
+        ? emails.map((e, i) => `${i + 1}. "${e.subject}" — ${e.fromName} (${e.fromEmail})\n   ${e.snippet}`).join('\n\n')
+        : '(inbox oxunmadı və ya boşdur)';
+    }
+
     // 4) İcazə süzgəcindən keçir — işçinin görə bilmədiyi sənədləri çıxar
     const allowedChunks = filterByPermission(matches || [], employee.role);
 
@@ -261,6 +290,8 @@ ${contextText || '(bu sual üçün uyğun yeni sənəd tapılmadı — əvvəlki
 MÖVCUD MƏZUNİYYƏT SORĞULARI (bu işçinin, verilənlər bazasından — real tarix üst-üstə düşməsini yoxlamaq üçün):
 ${existingLeavesText}
 
+${emailsText ? `SON EMAİLLƏR (Gmail-dən indi oxunub):\n${emailsText}\n` : ''}
+
 QAYDALAR:
 1. Yalnız yuxarıdakı parçalara əsaslan, uydurma.
 2. Əgər kontekst boşdursa və ya sual bununla əlaqəli deyilsə, "Bu məlumat mövcud bilik bazasında tapılmadı" de.
@@ -274,7 +305,8 @@ QAYDALAR:
    - it_ticket üçün category: "hardware" | "software" | "access" | "network"; priority: problemi ciddiliyinə görə seç (mes: "işləmir" = high, "yavaşdır" = normal); start_date/end_date lazım deyil, boş buraxa bilərsən
    - expense_request üçün category: "travel" | "meals" | "office" | "other"; start_date/end_date lazım deyil
 4. Adi cavab üçün sonunda: SOURCE: Sənəd adı — Section X.X
-5. Qısa, 2-4 cümlə.`;
+5. Qısa, 2-4 cümlə.
+6. Əgər yuxarıda "SON EMAİLLƏR" bölməsi verilibsə, istifadəçi bunları xülasə etməyi istəyirsə, hər emaili 1 sətirdə (kimdən, mövzu) yığcam göstər.`;
 
     // 6) Claude-dan cavab al (söhbət tarixçəsi ilə birlikdə)
     let message;
