@@ -259,8 +259,7 @@ QAYDALAR:
             };
 
             // Bildiriş kimə getməlidir? Əməliyyatın növünə görə düzgün departamentə yönləndiririk:
-            // - leave_request/expense_request -> işçinin öz departamentindəki manager
-            // - it_ticket -> IT departamentinin manageri (işçinin öz departamenti fərq etməz)
+            // leave_request -> HR, it_ticket -> IT, expense_request -> Finance (kim yaratsa da fərq etməz)
             // Admin həmişə bildiriş alır.
             const { data: allEmployees } = await supabase
               .from('employees')
@@ -269,14 +268,14 @@ QAYDALAR:
 
             const targetDeptName = actionData.type === 'it_ticket' ? 'IT'
               : actionData.type === 'expense_request' ? 'Finance'
-              : null; // leave_request -> işçinin öz departamenti
+              : actionData.type === 'leave_request' ? 'HR'
+              : null;
 
             const toNotify = (allEmployees || []).filter(m => {
               if (m.id === employee.id) return false;
               if (m.role === 'Admin') return true;
               if (!m.role.includes('Manager')) return false;
-              if (targetDeptName) return m.departments?.name === targetDeptName;
-              return m.department_id === employee.department_id; // leave_request halı
+              return targetDeptName && m.departments?.name === targetDeptName;
             });
 
             for (const m of toNotify) {
@@ -590,21 +589,19 @@ function isManagerRole(role) {
 }
 
 // Bu manager, bu konkret sorğunu təsdiqləməyə/rəddə səlahiyyətlidirmi? (Admin həmişə bəli)
+// Qayda: leave_request -> HR, it_ticket -> IT, expense_request -> Finance (kim yaratsa da fərq etməz)
 async function canManageAction(approver, action) {
   if (approver.role === 'Admin') return true;
   if (!isManagerRole(approver.role)) return false;
 
-  if (action.type === 'it_ticket') {
-    const { data: dept } = await supabase.from('departments').select('name').eq('id', approver.department_id).single();
-    return dept?.name === 'IT';
-  }
-  if (action.type === 'expense_request') {
-    const { data: dept } = await supabase.from('departments').select('name').eq('id', approver.department_id).single();
-    return dept?.name === 'Finance';
-  }
-  // leave_request: sorğunu yaradan işçi ilə eyni departamentdə olmalıdır
-  const { data: requester } = await supabase.from('employees').select('department_id').eq('id', action.employee_id).single();
-  return requester?.department_id === approver.department_id;
+  const targetDept = action.type === 'it_ticket' ? 'IT'
+    : action.type === 'expense_request' ? 'Finance'
+    : action.type === 'leave_request' ? 'HR'
+    : null;
+  if (!targetDept) return false;
+
+  const { data: dept } = await supabase.from('departments').select('name').eq('id', approver.department_id).single();
+  return dept?.name === targetDept;
 }
 
 app.post('/actions/:id/approve', async (req, res) => {
@@ -724,8 +721,8 @@ app.get('/pending-actions/:companyId', async (req, res) => {
       filtered = data.filter(action => {
         if (action.type === 'it_ticket') return viewerDeptName === 'IT';
         if (action.type === 'expense_request') return viewerDeptName === 'Finance';
-        // leave_request və digər hallar: öz departamentinin manageri
-        return action.employees?.department_id === viewer.department_id;
+        if (action.type === 'leave_request') return viewerDeptName === 'HR';
+        return false;
       });
     }
 
