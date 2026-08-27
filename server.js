@@ -102,6 +102,11 @@ async function requireAuth(req, res, next) {
   }
 }
 
+// İstifadəçi kimliyini (əvvəlcədən saxlanılan tokenlə) yoxlamaq üçün
+app.get('/auth/me', requireAuth, async (req, res) => {
+  res.json({ employee: { id: req.employee.id, name: req.employee.name, role: req.employee.role, department: req.employee.departments?.name } });
+});
+
 // Verilənlər bazasında in-app bildiriş yaradır (fire-and-forget — uğursuz olsa əsas əməliyyatı pozmasın)
 async function createNotification(companyId, employeeId, message, relatedActionId = null) {
   try {
