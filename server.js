@@ -240,7 +240,7 @@ app.get('/employees', async (req, res) => {
   res.json(data);
 });
 
-// Sənəd siyahısı — gələcək admin panel üçün əsas
+// Şirkət sənədləri
 app.get('/documents/:companyId', async (req, res) => {
   const { data, error } = await supabase
     .from('documents')
@@ -249,6 +249,66 @@ app.get('/documents/:companyId', async (req, res) => {
     .order('uploaded_at', { ascending: false });
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
+});
+
+// Audit Log — kim, nə vaxt, nə edib (söhbətlər + əməliyyatlar birləşdirilmiş xronoloji siyahı)
+app.get('/audit-log/:companyId', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 50;
+
+    const [{ data: chats, error: chatsError }, { data: actions, error: actionsError }] = await Promise.all([
+      supabase
+        .from('chat_logs')
+        .select('id, created_at, question, source_type, employees(name, role)')
+        .eq('company_id', req.params.companyId)
+        .order('created_at', { ascending: false })
+        .limit(limit),
+      supabase
+        .from('action_requests')
+        .select('id, created_at, type, title, status, approved_at, employees:employee_id(name, role), approver:approved_by(name)')
+        .eq('company_id', req.params.companyId)
+        .order('created_at', { ascending: false })
+        .limit(limit)
+    ]);
+    if (chatsError) throw chatsError;
+    if (actionsError) throw actionsError;
+
+    const events = [];
+
+    for (const c of chats || []) {
+      events.push({
+        timestamp: c.created_at,
+        actor: c.employees?.name || 'Naməlum',
+        actorRole: c.employees?.role,
+        eventType: 'question',
+        description: `"${c.question}" — nəticə: ${c.source_type}`
+      });
+    }
+
+    for (const a of actions || []) {
+      events.push({
+        timestamp: a.created_at,
+        actor: a.employees?.name || 'Naməlum',
+        actorRole: a.employees?.role,
+        eventType: 'action_created',
+        description: `${a.type} yaratdı: "${a.title}" (status: ${a.status})`
+      });
+      if (a.approved_at) {
+        events.push({
+          timestamp: a.approved_at,
+          actor: a.approver?.name || 'Naməlum',
+          eventType: a.status === 'approved' ? 'action_approved' : 'action_rejected',
+          description: `"${a.title}" sorğusunu ${a.status === 'approved' ? 'təsdiqlədi' : 'rədd etdi'}`
+        });
+      }
+    }
+
+    events.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+    res.json(events.slice(0, limit));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get('/actions/:employeeId', async (req, res) => {
