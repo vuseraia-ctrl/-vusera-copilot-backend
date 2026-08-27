@@ -60,6 +60,25 @@ app.post('/ask', async (req, res) => {
     });
     if (matchError) throw matchError;
 
+    // 3.5) Söhbət yaddaşı — bu işçinin son 6 mesajını gətir ki, Claude
+    // əvvəlki sualları "xatırlaya" bilsin (məs: "bəs həftədə neçə gün?")
+    const { data: history } = await supabase
+      .from('chat_logs')
+      .select('question, answer')
+      .eq('employee_id', employeeId)
+      .order('created_at', { ascending: false })
+      .limit(6);
+
+    const conversationMessages = [];
+    if (history && history.length > 0) {
+      // Ən köhnədən ən yeniyə doğru sırala (Claude-a düzgün xronoloji ardıcıllıqla veririk)
+      for (const h of history.reverse()) {
+        conversationMessages.push({ role: 'user', content: h.question });
+        conversationMessages.push({ role: 'assistant', content: h.answer });
+      }
+    }
+    conversationMessages.push({ role: 'user', content: question });
+
     // 4) İcazə süzgəcindən keçir — işçinin görə bilmədiyi sənədləri çıxar
     const allowedChunks = filterByPermission(matches || [], employee.role);
 
@@ -80,8 +99,8 @@ app.post('/ask', async (req, res) => {
     const systemPrompt = `Sən VUSERA Employee Copilot-san. Yalnız Azərbaycan dilində cavab ver.
 İstifadəçi: ${employee.name}, ${employee.departments?.name || ''}, rol: ${employee.role}.
 
-Aşağıda YALNIZ bu sualla əlaqəli, sistemin tapdığı sənəd parçaları var:
-${contextText || '(heç bir uyğun sənəd tapılmadı)'}
+Aşağıda bu sualla əlaqəli, sistemin indi tapdığı sənəd parçaları var (əgər söhbətin əvvəlki hissəsi varsa, onu da nəzərə al — məsələn "bəs neçə gün?" kimi davam sualları):
+${contextText || '(bu sual üçün uyğun yeni sənəd tapılmadı — əvvəlki söhbətə əsaslana bilərsən, əks halda tapılmadığını de)'}
 
 QAYDALAR:
 1. Yalnız yuxarıdakı parçalara əsaslan, uydurma.
@@ -90,12 +109,12 @@ QAYDALAR:
 4. Adi cavab üçün sonunda: SOURCE: Sənəd adı — Section X.X
 5. Qısa, 2-4 cümlə.`;
 
-    // 6) Claude-dan cavab al
+    // 6) Claude-dan cavab al (söhbət tarixçəsi ilə birlikdə)
     const message = await anthropic.messages.create({
       model: 'claude-sonnet-4-6',
       max_tokens: 500,
       system: systemPrompt,
-      messages: [{ role: 'user', content: question }]
+      messages: conversationMessages
     });
 
     let answerText = message.content.map(b => b.text || '').join('');
