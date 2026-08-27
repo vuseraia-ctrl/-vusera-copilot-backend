@@ -440,6 +440,39 @@ app.get('/documents/:companyId', async (req, res) => {
   res.json(data);
 });
 
+// Sənəd məlumatını yeniləmək (ad, kod, icazələr — məzmunu dəyişmək üçün silib yenidən yükləyin)
+app.put('/documents/:id', async (req, res) => {
+  try {
+    const { title, docCode, restrictedRoles } = req.body;
+    const updates = {};
+    if (title) updates.title = title;
+    if (docCode !== undefined) updates.doc_code = docCode;
+    if (Array.isArray(restrictedRoles)) updates.restricted_to_roles = restrictedRoles;
+
+    const { data, error } = await supabase
+      .from('documents')
+      .update(updates)
+      .eq('id', req.params.id)
+      .select()
+      .single();
+    if (error) throw error;
+    res.json({ success: true, document: data });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Sənədi tamamilə silmək (bütün parçaları/embedding-ləri də silinir — cascade)
+app.delete('/documents/:id', async (req, res) => {
+  try {
+    const { error } = await supabase.from('documents').delete().eq('id', req.params.id);
+    if (error) throw error;
+    res.json({ success: true, message: 'Sənəd və bütün parçaları silindi' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Audit Log — kim, nə vaxt, nə edib (söhbətlər + əməliyyatlar birləşdirilmiş xronoloji siyahı)
 app.get('/audit-log/:companyId', async (req, res) => {
   try {
