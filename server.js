@@ -326,10 +326,12 @@ app.post('/ingest', ingestLimiter, async (req, res) => {
     }
 
     let extractedText = content;
+    let fileUrl = null;
 
-    // Əgər real fayl göndərilibsə, ondan mətni çıxarırıq
+    // Əgər real fayl göndərilibsə, ondan mətni çıxarırıq VƏ faylın özünü də saxlayırıq (açıla bilsin deyə)
     if (fileBase64) {
       const buffer = Buffer.from(fileBase64, 'base64');
+
       if (fileType === 'pdf') {
         const parsed = await pdfParse(buffer);
         extractedText = parsed.text;
@@ -338,6 +340,21 @@ app.post('/ingest', ingestLimiter, async (req, res) => {
         extractedText = parsed.value;
       } else {
         return res.status(400).json({ error: 'fileType "pdf" və ya "docx" olmalıdır' });
+      }
+
+      // Faylın özünü Supabase Storage-a yükləyirik ki, sonradan "aç" düyməsi işləsin
+      const fileName = `${companyId}/${Date.now()}-${title.replace(/[^a-zA-Z0-9._-]/g, '_')}.${fileType}`;
+      const { error: uploadError } = await supabase.storage
+        .from('documents')
+        .upload(fileName, buffer, {
+          contentType: fileType === 'pdf' ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        });
+
+      if (uploadError) {
+        console.error('Fayl saxlanma xətası (mətn yenə də indekslənəcək):', uploadError.message);
+      } else {
+        const { data: urlData } = supabase.storage.from('documents').getPublicUrl(fileName);
+        fileUrl = urlData?.publicUrl || null;
       }
     }
 
@@ -349,7 +366,7 @@ app.post('/ingest', ingestLimiter, async (req, res) => {
 
     const { data: doc, error: docError } = await supabase
       .from('documents')
-      .insert({ company_id: companyId, title, doc_code: docCode || null, restricted_to_roles: restricted })
+      .insert({ company_id: companyId, title, doc_code: docCode || null, restricted_to_roles: restricted, file_url: fileUrl })
       .select()
       .single();
     if (docError) throw docError;
@@ -483,7 +500,7 @@ app.get('/departments/:companyId', async (req, res) => {
 app.get('/documents/:companyId', async (req, res) => {
   const { data, error } = await supabase
     .from('documents')
-    .select('id, title, doc_code, restricted_to_roles, uploaded_at')
+    .select('id, title, doc_code, restricted_to_roles, uploaded_at, file_url')
     .eq('company_id', req.params.companyId)
     .order('uploaded_at', { ascending: false });
   if (error) return res.status(500).json({ error: error.message });
