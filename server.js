@@ -133,7 +133,7 @@ QAYDALAR:
           answerText = answerText.replace(/ACTION:\s*\{.+\}\s*$/s, '').trim();
           sourceType = 'action';
 
-          // Real əməliyyat sorğusunu verilənlər bazasına yaz
+          // Real əməliyyat sorğusunu verilənlər bazasına yaz (status: pending, manager təsdiqini gözləyir)
           const { data: savedAction, error: actionError } = await supabase
             .from('action_requests')
             .insert({
@@ -142,7 +142,7 @@ QAYDALAR:
               type: actionData.type,
               title: actionData.title,
               detail: actionData.detail,
-              status: 'created'
+              status: 'pending'
             })
             .select()
             .single();
@@ -233,6 +233,76 @@ app.get('/actions/:employeeId', async (req, res) => {
     .from('action_requests')
     .select('*')
     .eq('employee_id', req.params.employeeId)
+    .order('created_at', { ascending: false });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+// ---- Manager təsdiqi: /actions/:id/approve və /actions/:id/reject ----
+
+function isManagerRole(role) {
+  return role.includes('Manager') || role === 'Admin';
+}
+
+app.post('/actions/:id/approve', async (req, res) => {
+  try {
+    const { approverId } = req.body;
+    if (!approverId) return res.status(400).json({ error: 'approverId tələb olunur' });
+
+    const { data: approver, error: approverError } = await supabase
+      .from('employees').select('*').eq('id', approverId).single();
+    if (approverError || !approver) return res.status(404).json({ error: 'Təsdiqləyici tapılmadı' });
+    if (!isManagerRole(approver.role)) {
+      return res.status(403).json({ error: 'Yalnız manager/admin rolları təsdiqləyə bilər' });
+    }
+
+    const { data: updated, error: updateError } = await supabase
+      .from('action_requests')
+      .update({ status: 'approved', approved_by: approverId, approved_at: new Date().toISOString() })
+      .eq('id', req.params.id)
+      .select()
+      .single();
+    if (updateError) throw updateError;
+
+    res.json({ success: true, action: updated });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/actions/:id/reject', async (req, res) => {
+  try {
+    const { approverId, reason } = req.body;
+    if (!approverId) return res.status(400).json({ error: 'approverId tələb olunur' });
+
+    const { data: approver, error: approverError } = await supabase
+      .from('employees').select('*').eq('id', approverId).single();
+    if (approverError || !approver) return res.status(404).json({ error: 'Təsdiqləyici tapılmadı' });
+    if (!isManagerRole(approver.role)) {
+      return res.status(403).json({ error: 'Yalnız manager/admin rolları rədd edə bilər' });
+    }
+
+    const { data: updated, error: updateError } = await supabase
+      .from('action_requests')
+      .update({ status: 'rejected', approved_by: approverId, approved_at: new Date().toISOString(), rejection_reason: reason || null })
+      .eq('id', req.params.id)
+      .select()
+      .single();
+    if (updateError) throw updateError;
+
+    res.json({ success: true, action: updated });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Şirkətin bütün "pending" (gözləyən) sorğularını göstərir — Manager Dashboard üçün əsasdır
+app.get('/pending-actions/:companyId', async (req, res) => {
+  const { data, error } = await supabase
+    .from('action_requests')
+    .select('*, employees(name, role)')
+    .eq('company_id', req.params.companyId)
+    .eq('status', 'pending')
     .order('created_at', { ascending: false });
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
