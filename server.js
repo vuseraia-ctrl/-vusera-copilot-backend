@@ -468,6 +468,17 @@ app.post('/departments', async (req, res) => {
   }
 });
 
+// Şirkətin departamentlərini siyahı kimi gətirmək (admin panel üçün)
+app.get('/departments/:companyId', async (req, res) => {
+  const { data, error } = await supabase
+    .from('departments')
+    .select('id, name')
+    .eq('company_id', req.params.companyId)
+    .order('name');
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
 // Şirkət sənədləri
 app.get('/documents/:companyId', async (req, res) => {
   const { data, error } = await supabase
