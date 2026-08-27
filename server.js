@@ -948,10 +948,8 @@ const PORT = process.env.PORT || 3000;
 // Bu endpoint xaricdən (Make.com-un "scheduled" — gündəlik) çağırılmalıdır.
 // 2 gündən çox gözləyən sorğular üçün: manager-ə "hələ baxılmayıb" xatırlatması,
 // işçiyə isə "sorğunuz hələ gözləyir" məlumatı göndərir.
-app.post('/proactive/check-reminders', requireAuth, async (req, res) => {
+app.post('/proactive/check-reminders', async (req, res) => {
   try {
-    if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin bunu işə sala bilər' });
-
     const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
 
     const { data: staleRequests, error } = await supabase
