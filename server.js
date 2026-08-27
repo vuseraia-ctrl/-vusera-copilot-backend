@@ -296,16 +296,40 @@ app.post('/actions/:id/reject', async (req, res) => {
   }
 });
 
-// Şirkətin bütün "pending" (gözləyən) sorğularını göstərir — Manager Dashboard üçün əsasdır
+// Şirkətin "pending" (gözləyən) sorğularını göstərir — Manager Dashboard üçün əsasdır.
+// Icazə qaydası: Admin -> bütün şirkəti görür. Manager -> yalnız öz departamentini görür. Employee -> görə bilməz.
 app.get('/pending-actions/:companyId', async (req, res) => {
-  const { data, error } = await supabase
-    .from('action_requests')
-    .select('*, employees(name, role)')
-    .eq('company_id', req.params.companyId)
-    .eq('status', 'pending')
-    .order('created_at', { ascending: false });
-  if (error) return res.status(500).json({ error: error.message });
-  res.json(data);
+  try {
+    const { viewerId } = req.query;
+    if (!viewerId) return res.status(400).json({ error: 'viewerId (?viewerId=...) tələb olunur' });
+
+    const { data: viewer, error: viewerError } = await supabase
+      .from('employees').select('*').eq('id', viewerId).single();
+    if (viewerError || !viewer) return res.status(404).json({ error: 'İstifadəçi tapılmadı' });
+
+    if (!isManagerRole(viewer.role)) {
+      return res.status(403).json({ error: 'Yalnız manager/admin rolları gözləyən sorğuları görə bilər' });
+    }
+
+    let query = supabase
+      .from('action_requests')
+      .select('*, employees(name, role, department_id)')
+      .eq('company_id', req.params.companyId)
+      .eq('status', 'pending')
+      .order('created_at', { ascending: false });
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    // Admin hamısını görür. Manager isə yalnız öz departamentindəki işçilərin sorğularını görür.
+    const filtered = viewer.role === 'Admin'
+      ? data
+      : data.filter(action => action.employees?.department_id === viewer.department_id);
+
+    res.json(filtered);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 const PORT = process.env.PORT || 3000;
