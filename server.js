@@ -48,6 +48,20 @@ async function notifyMake(payload) {
   }
 }
 
+// Verilənlər bazasında in-app bildiriş yaradır (fire-and-forget — uğursuz olsa əsas əməliyyatı pozmasın)
+async function createNotification(companyId, employeeId, message, relatedActionId = null) {
+  try {
+    await supabase.from('notifications').insert({
+      company_id: companyId,
+      employee_id: employeeId,
+      message,
+      related_action_id: relatedActionId
+    });
+  } catch (e) {
+    console.error('Bildiriş yaradıla bilmədi:', e.message);
+  }
+}
+
 // ---- Sadə API açarı yoxlaması (tam authentication deyil, amma təsadüfi sorğulara qarşı maneədir) ----
 // Real login sistemi qurulana qədər, hər sorğu bu gizli açarı bilməlidir.
 function checkApiSecret(req, res, next) {
@@ -243,6 +257,20 @@ QAYDALAR:
               category: savedAction.category,
               status: savedAction.status
             };
+
+            // Öz departamentindəki managerlərə (və Admin-lərə) bildiriş göndər
+            const { data: managers } = await supabase
+              .from('employees')
+              .select('id, role, department_id')
+              .eq('company_id', employee.company_id);
+            const toNotify = (managers || []).filter(m =>
+              m.id !== employee.id && (m.role === 'Admin' ||
+                (m.role.includes('Manager') && m.department_id === employee.department_id))
+            );
+            for (const m of toNotify) {
+              createNotification(employee.company_id, m.id,
+                `${employee.name} yeni bir ${actionData.type} yaratdı: "${actionData.title}"`, savedAction.id);
+            }
           }
         } catch (e) {
           console.error('Action parse xətası:', e.message);
@@ -580,6 +608,10 @@ app.post('/actions/:id/approve', async (req, res) => {
       });
     }
 
+    // İşçiyə bildiriş göndər
+    createNotification(updated.company_id, updated.employee_id,
+      `"${updated.title}" sorğunuz təsdiqləndi ✅`, updated.id);
+
     res.json({ success: true, action: updated });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -605,6 +637,9 @@ app.post('/actions/:id/reject', async (req, res) => {
       .select()
       .single();
     if (updateError) throw updateError;
+
+    createNotification(updated.company_id, updated.employee_id,
+      `"${updated.title}" sorğunuz rədd edildi.${reason ? ' Səbəb: ' + reason : ''}`, updated.id);
 
     res.json({ success: true, action: updated });
   } catch (err) {
@@ -657,6 +692,61 @@ app.use((req, res) => {
 app.use((err, req, res, next) => {
   console.error('Gözlənilməz xəta:', err);
   res.status(500).json({ error: 'Daxili server xətası baş verdi' });
+});
+
+// Bildirişlər — istifadəçinin bütün bildirişlərini gətirir (yenilər əvvəldə)
+app.get('/notifications/:employeeId', async (req, res) => {
+  const { data, error } = await supabase
+    .from('notifications')
+    .select('*')
+    .eq('employee_id', req.params.employeeId)
+    .order('created_at', { ascending: false })
+    .limit(30);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+// Bir bildirişi "oxunmuş" kimi işarələmək
+app.post('/notifications/:id/read', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('notifications')
+      .update({ is_read: true })
+      .eq('id', req.params.id)
+      .select()
+      .single();
+    if (error) throw error;
+    res.json({ success: true, notification: data });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Şirkət üçün ümumi statistika — Admin Dashboard-un əsası
+app.get('/dashboard/:companyId', async (req, res) => {
+  try {
+    const companyId = req.params.companyId;
+
+    const [
+      { count: employeeCount },
+      { count: aiConversations },
+      { count: requestCount },
+      { count: pendingRequests },
+      { count: itTickets },
+      { count: expenses }
+    ] = await Promise.all([
+      supabase.from('employees').select('*', { count: 'exact', head: true }).eq('company_id', companyId).eq('status', 'active'),
+      supabase.from('chat_logs').select('*', { count: 'exact', head: true }).eq('company_id', companyId),
+      supabase.from('action_requests').select('*', { count: 'exact', head: true }).eq('company_id', companyId),
+      supabase.from('action_requests').select('*', { count: 'exact', head: true }).eq('company_id', companyId).eq('status', 'pending'),
+      supabase.from('action_requests').select('*', { count: 'exact', head: true }).eq('company_id', companyId).eq('type', 'it_ticket'),
+      supabase.from('action_requests').select('*', { count: 'exact', head: true }).eq('company_id', companyId).eq('type', 'expense_request')
+    ]);
+
+    res.json({ employeeCount, aiConversations, requestCount, pendingRequests, itTickets, expenses });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 const PORT = process.env.PORT || 3000;
