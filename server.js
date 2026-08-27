@@ -8,7 +8,10 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import rateLimit from 'express-rate-limit';
 import Anthropic from '@anthropic-ai/sdk';
+import pdfParse from 'pdf-parse';
+import mammoth from 'mammoth';
 import { supabase, getEmbedding, chunkDocument } from './lib.js';
 
 const app = express();
@@ -57,6 +60,23 @@ function checkApiSecret(req, res, next) {
 }
 app.use(checkApiSecret);
 
+// ---- Rate limiting — sui-istifadəyə/həddindən artıq sorğuya qarşı əlavə maneə ----
+// Auth sistemi olmadığı üçün, ən azı hər IP-nin dəqiqədə etdiyi sorğu sayını məhdudlaşdırırıq.
+const askLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 dəqiqə
+  max: 20,             // hər IP üçün dəqiqədə maksimum 20 sorğu
+  message: { error: 'Çox tez-tez sorğu göndərirsiniz. Bir azdan yenidən cəhd edin.' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+const ingestLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10, // sənəd yükləmə daha az tez-tez baş verir
+  message: { error: 'Çox tez-tez sənəd yükləyirsiniz. Bir azdan yenidən cəhd edin.' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
 // ---- Köməkçi funksiyalar ----
 
 // Rolun "yüksək icazəli" olub-olmadığını yoxlayır (HR/Finance Manager, Admin)
@@ -74,7 +94,7 @@ function filterByPermission(chunks, employeeRole) {
 
 // ---- Əsas endpoint: /ask ----
 
-app.post('/ask', async (req, res) => {
+app.post('/ask', askLimiter, async (req, res) => {
   try {
     const { employeeId, question } = req.body;
     if (!employeeId || !question) {
@@ -160,7 +180,10 @@ ${contextText || '(bu sual üçün uyğun yeni sənəd tapılmadı — əvvəlki
 QAYDALAR:
 1. Yalnız yuxarıdakı parçalara əsaslan, uydurma.
 2. Əgər kontekst boşdursa və ya sual bununla əlaqəli deyilsə, "Bu məlumat mövcud bilik bazasında tapılmadı" de.
-3. Əgər istifadəçi bir əməliyyat istəyirsə (məzuniyyət/xərc/IT problemi), lazımi detalları topla və əməliyyatı təsdiqlə, sonunda: ACTION:{"type":"leave_request|it_ticket|expense_request","title":"...","detail":"..."}
+3. Əgər istifadəçi bir əməliyyat istəyirsə (məzuniyyət/xərc/IT problemi), lazımi detalları topla və əməliyyatı təsdiqlə, sonunda: ACTION:{"type":"leave_request|it_ticket|expense_request","title":"...","detail":"...","priority":"low|normal|high","category":"..."}
+   - leave_request üçün category: "annual" | "sick" | "unpaid" | "emergency"
+   - it_ticket üçün category: "hardware" | "software" | "access" | "network"; priority: problemi ciddiliyinə görə seç (mes: "işləmir" = high, "yavaşdır" = normal)
+   - expense_request üçün category: "travel" | "meals" | "office" | "other"
 4. Adi cavab üçün sonunda: SOURCE: Sənəd adı — Section X.X
 5. Qısa, 2-4 cümlə.`;
 
@@ -203,6 +226,8 @@ QAYDALAR:
               type: actionData.type,
               title: actionData.title,
               detail: actionData.detail,
+              priority: actionData.priority || 'normal',
+              category: actionData.category || null,
               status: 'pending'
             })
             .select()
@@ -214,6 +239,8 @@ QAYDALAR:
               type: savedAction.type,
               title: savedAction.title,
               detail: savedAction.detail,
+              priority: savedAction.priority,
+              category: savedAction.category,
               status: savedAction.status
             };
           }
@@ -246,12 +273,37 @@ QAYDALAR:
 
 // ---- Sənəd yükləmə: /ingest ----
 // Bu, ingest.js skriptinin veb versiyasıdır — kompüterdə heç bir quraşdırma tələb etmir.
-// Make.com-dan (yaxud hər hansı HTTP aləti ilə) POST sorğusu ilə çağırıla bilər.
-app.post('/ingest', async (req, res) => {
+// İki üsulla məzmun qəbul edir:
+//   1) "content" — sadə mətn (əvvəlki kimi)
+//   2) "fileBase64" + "fileType" ('pdf' və ya 'docx') — real fayldan mətn çıxarır
+app.post('/ingest', ingestLimiter, async (req, res) => {
   try {
-    const { companyId, title, docCode, content, restrictedRoles } = req.body;
-    if (!companyId || !title || !content) {
-      return res.status(400).json({ error: 'companyId, title və content tələb olunur' });
+    const { companyId, title, docCode, content, fileBase64, fileType, restrictedRoles } = req.body;
+    if (!companyId || !title) {
+      return res.status(400).json({ error: 'companyId və title tələb olunur' });
+    }
+    if (!content && !fileBase64) {
+      return res.status(400).json({ error: 'content və ya fileBase64 tələb olunur' });
+    }
+
+    let extractedText = content;
+
+    // Əgər real fayl göndərilibsə, ondan mətni çıxarırıq
+    if (fileBase64) {
+      const buffer = Buffer.from(fileBase64, 'base64');
+      if (fileType === 'pdf') {
+        const parsed = await pdfParse(buffer);
+        extractedText = parsed.text;
+      } else if (fileType === 'docx') {
+        const parsed = await mammoth.extractRawText({ buffer });
+        extractedText = parsed.value;
+      } else {
+        return res.status(400).json({ error: 'fileType "pdf" və ya "docx" olmalıdır' });
+      }
+    }
+
+    if (!extractedText || extractedText.trim().length === 0) {
+      return res.status(400).json({ error: 'Sənəddən mətn çıxarıla bilmədi (boş fayl ola bilər)' });
     }
 
     const restricted = Array.isArray(restrictedRoles) ? restrictedRoles : [];
@@ -263,7 +315,7 @@ app.post('/ingest', async (req, res) => {
       .single();
     if (docError) throw docError;
 
-    const chunks = chunkDocument(content);
+    const chunks = chunkDocument(extractedText);
     let count = 0;
     for (const chunk of chunks) {
       const embedding = await getEmbedding(chunk.content);
@@ -402,7 +454,7 @@ app.get('/audit-log/:companyId', async (req, res) => {
         .limit(limit),
       supabase
         .from('action_requests')
-        .select('id, created_at, type, title, status, approved_at, employees:employee_id(name, role), approver:approved_by(name)')
+        .select('id, created_at, type, title, status, approved_at, employees!employee_id(name, role), approver:employees!approved_by(name)')
         .eq('company_id', req.params.companyId)
         .order('created_at', { ascending: false })
         .limit(limit)
@@ -480,7 +532,7 @@ app.post('/actions/:id/approve', async (req, res) => {
       .from('action_requests')
       .update({ status: 'approved', approved_by: approverId, approved_at: new Date().toISOString() })
       .eq('id', req.params.id)
-      .select('*, employees:employee_id(name)')
+      .select('*, employees!employee_id(name)')
       .single();
     if (updateError) throw updateError;
 
@@ -544,7 +596,7 @@ app.get('/pending-actions/:companyId', async (req, res) => {
 
     let query = supabase
       .from('action_requests')
-      .select('*, employees:employee_id(name, role, department_id)')
+      .select('*, employees!employee_id(name, role, department_id)')
       .eq('company_id', req.params.companyId)
       .eq('status', 'pending')
       .order('created_at', { ascending: false });
