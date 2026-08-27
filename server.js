@@ -240,6 +240,17 @@ app.get('/employees', async (req, res) => {
   res.json(data);
 });
 
+// Sənəd siyahısı — gələcək admin panel üçün əsas
+app.get('/documents/:companyId', async (req, res) => {
+  const { data, error } = await supabase
+    .from('documents')
+    .select('id, title, doc_code, restricted_to_roles, uploaded_at')
+    .eq('company_id', req.params.companyId)
+    .order('uploaded_at', { ascending: false });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
 app.get('/actions/:employeeId', async (req, res) => {
   const { data, error } = await supabase
     .from('action_requests')
