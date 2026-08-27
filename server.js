@@ -906,8 +906,7 @@ app.post('/notifications/:id/read', requireAuth, async (req, res) => {
 });
 
 // Şirkət üçün ümumi statistika — Admin Dashboard-un əsası
-app.get('/dashboard/:companyId', requireAuth, async (req, res) => {
-  try {
+app.get('/dashboard/:companyId', requireAuth, async (req, res) => {  try {
     if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin dashboard-u görə bilər' });
     const companyId = req.params.companyId;
 
@@ -945,4 +944,66 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 3000;
+// ---- Proaktiv AI: Gözləyən sorğular üçün xatırlatmalar ----
+// Bu endpoint xaricdən (Make.com-un "scheduled" — gündəlik) çağırılmalıdır.
+// 2 gündən çox gözləyən sorğular üçün: manager-ə "hələ baxılmayıb" xatırlatması,
+// işçiyə isə "sorğunuz hələ gözləyir" məlumatı göndərir.
+app.post('/proactive/check-reminders', requireAuth, async (req, res) => {
+  try {
+    if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin bunu işə sala bilər' });
+
+    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+
+    const { data: staleRequests, error } = await supabase
+      .from('action_requests')
+      .select('*, employees!employee_id(id, name, company_id, department_id)')
+      .eq('status', 'pending')
+      .lt('created_at', twoDaysAgo);
+    if (error) throw error;
+
+    let remindersSent = 0;
+
+    for (const reqItem of staleRequests || []) {
+      const emp = reqItem.employees;
+      if (!emp) continue;
+
+      // İşçiyə: "sorğunuz hələ gözləyir"
+      await createNotification(emp.company_id, emp.id,
+        `⏳ Xatırlatma: "${reqItem.title}" sorğunuz hələ gözləyir (${Math.floor((Date.now() - new Date(reqItem.created_at)) / (24*60*60*1000))} gündür).`,
+        reqItem.id);
+
+      // Uyğun managerlərə: "gözləyən bir sorğu var, baxılmayıb"
+      const targetDept = reqItem.type === 'it_ticket' ? 'IT'
+        : reqItem.type === 'expense_request' ? 'Finance'
+        : reqItem.type === 'leave_request' ? 'HR'
+        : null;
+
+      if (targetDept) {
+        const { data: managers } = await supabase
+          .from('employees')
+          .select('id, role, departments(name)')
+          .eq('company_id', emp.company_id);
+
+        const relevantManagers = (managers || []).filter(m =>
+          m.role === 'Admin' || (m.role.includes('Manager') && m.departments?.name === targetDept)
+        );
+
+        for (const m of relevantManagers) {
+          await createNotification(emp.company_id, m.id,
+            `⏳ Xatırlatma: ${emp.name}-in "${reqItem.title}" sorğusu 2+ gündür gözləyir, hələ baxılmayıb.`,
+            reqItem.id);
+        }
+      }
+
+      remindersSent++;
+    }
+
+    res.json({ success: true, remindersSent });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+
 app.listen(PORT, () => console.log(`🚀 VUSERA Copilot API ${PORT} portunda işləyir`));
