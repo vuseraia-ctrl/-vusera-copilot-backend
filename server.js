@@ -61,6 +61,22 @@ async function readRecentEmails() {
   }
 }
 
+// Gmail-dən email göndərir (Make.com vasitəsilə, sinxron sorğu ilə)
+async function sendEmailViaMake(to, subject, body) {
+  if (!process.env.MAKE_EMAIL_SEND_URL) return { success: false, error: 'Email göndərmə qurulmayıb' };
+  try {
+    const response = await fetch(process.env.MAKE_EMAIL_SEND_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to, subject, body })
+    });
+    const data = await response.json();
+    return { success: data.success === true };
+  } catch (e) {
+    console.error('Email göndərilmədi:', e.message);
+    return { success: false, error: e.message };
+  }
+}
 // Sualın email haqqında olub-olmadığını sadəcə açar sözlərlə yoxlayır
 function isEmailRelated(question) {
   const keywords = ['email', 'e-mail', 'e-poçt', 'epoçt', 'poçt', 'məktub', 'inbox', 'gələn qutu'];
@@ -304,6 +320,7 @@ QAYDALAR:
    - leave_request üçün category: "annual" | "sick" | "unpaid" | "emergency"; start_date/end_date MÜTLƏQ doldurulmalıdır (il göstərilməsə, ${new Date().getFullYear()} il qəbul et)
    - it_ticket üçün category: "hardware" | "software" | "access" | "network"; priority: problemi ciddiliyinə görə seç (mes: "işləmir" = high, "yavaşdır" = normal); start_date/end_date lazım deyil, boş buraxa bilərsən
    - expense_request üçün category: "travel" | "meals" | "office" | "other"; start_date/end_date lazım deyil
+   ƏLAVƏ: Əgər istifadəçi email GÖNDƏRMƏK istəyirsə (kiməsə yazmaq, cavab yazmaq), bu da eyni 2-addımlı prosesə tabedir: ADDIM 1-də draft-ı göstər (kimə, mövzu, mətn) və təsdiq soruş; ADDIM 2-də (təsdiqdən sonra) bunu yaz: ACTION:{"type":"send_email","to":"email@ünvanı","subject":"...","title":"Email göndərildi","detail":"..."}
 4. Adi cavab üçün sonunda: SOURCE: Sənəd adı — Section X.X
 5. Qısa, 2-4 cümlə.
 6. Əgər yuxarıda "SON EMAİLLƏR" bölməsi verilibsə, istifadəçi bunları xülasə etməyi istəyirsə, hər emaili 1 sətirdə (kimdən, mövzu) yığcam göstər.`;
@@ -338,6 +355,17 @@ QAYDALAR:
           answerText = answerText.replace(/ACTION:\s*\{.*?\}/s, '').trim();
           sourceType = 'action';
 
+          if (actionData.type === 'send_email') {
+            // Email göndərmə - approval axınına yox, birbaşa Make.com-a gedir
+            const emailResult = await sendEmailViaMake(actionData.to, actionData.subject, actionData.detail || actionData.body || '');
+            createdAction = {
+              id: 'email-' + Date.now(),
+              type: 'send_email',
+              title: emailResult.success ? `Email göndərildi: ${actionData.to}` : 'Email göndərilmədi',
+              detail: actionData.subject || '',
+              status: emailResult.success ? 'sent' : 'failed'
+            };
+          } else {
           // Real əməliyyat sorğusunu verilənlər bazasına yaz (status: pending, manager təsdiqini gözləyir)
           const { data: savedAction, error: actionError } = await supabase
             .from('action_requests')
@@ -392,6 +420,7 @@ QAYDALAR:
                 `${employee.name} yeni bir ${actionData.type} yaratdı: "${actionData.title}"`, savedAction.id);
             }
           }
+          } // send_email deyilsə bloku bağlanır
         } catch (e) {
           console.error('Action parse xətası:', e.message);
         }
