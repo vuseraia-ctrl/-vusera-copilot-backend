@@ -33,21 +33,6 @@ function isValidUUID(str) {
   return typeof str === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
 }
 
-// Make.com-a "webhook" bildirişi göndərir (məsələn təsdiqlənən məzuniyyəti Google Calendar-a yazmaq üçün).
-// Bu, "fire-and-forget"dir — uğursuz olsa belə əsas cavabı gecikdirmir və ya pozmur.
-async function notifyMake(payload) {
-  if (!process.env.MAKE_WEBHOOK_URL) return; // qurulmayıbsa, sakitcə keç
-  try {
-    await fetch(process.env.MAKE_WEBHOOK_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-  } catch (e) {
-    console.error('Make.com bildirişi göndərilmədi:', e.message);
-  }
-}
-
 // ---- VUSERA Actions Router — bütün Make.com inteqrasiyaları TƏK bir webhook-dan keçir ----
 // (Pulsuz Make planında yalnız 2 aktiv ssenari icazəli olduğu üçün, hamısını "action" sahəsinə görə
 // bir Router-də birləşdirmişik: send_email | check_calendar | create_meeting | read_emails)
@@ -861,10 +846,9 @@ app.post('/actions/:id/approve', requireAuth, async (req, res) => {
       .single();
     if (updateError) throw updateError;
 
-    // Əgər bu bir məzuniyyət sorğusudursa, Make.com-a bildiriş göndər (məs: Google Calendar-a yazmaq üçün)
+    // Əgər bu bir məzuniyyət sorğusudursa, Google Calendar-a yaz (Router-in "leave_approved" route-u ilə)
     if (updated.type === 'leave_request') {
-      notifyMake({
-        event: 'leave_request_approved',
+      callVuseraRouter('leave_approved', {
         employeeName: updated.employees?.name,
         title: updated.title,
         detail: updated.detail,
