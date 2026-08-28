@@ -439,12 +439,12 @@ QAYDALAR:
 3. ƏMƏLİYYAT (məzuniyyət/xərc/IT problemi) İKİ ADDIMLI PROSESDİR:
    ADDIM 1 (Təklif): İstifadəçi ilk dəfə bir iş görülməsini istəyəndə, lazımi məlumatı (tarix, məbləğ, problem) topla, XÜLASƏ ET və aydın şəkildə TƏSDİQ SORUŞ (məs: "Bunu təsdiqləyirsinizmi?"). Bu addımda HEÇ VAXT ACTION yazma.
    ƏGƏR TİP leave_request-dirsə: aşağıdakı "MÖVCUD MƏZUNİYYƏT SORĞULARI" siyahısı VƏ "GOOGLE CALENDAR-DA MƏŞĞUL VAXTLAR" ilə TARİX ÜST-ÜSTƏ DÜŞMƏSİNİ yoxla, üst-üstə düşmə varsa bunu AÇIQ şəkildə xəbərdarlıq et (təsdiq soruşarkən).
-   ADDIM 2 (Təsdiq): Yalnız əgər söhbətin ƏVVƏLKİ sənin mesajında artıq təklif irəli sürmüsənsə VƏ istifadəçi indi "bəli/hə/təsdiqləyirəm/et" kimi razılıq bildirirsə, cavabının sonunda bunu yaz: ACTION:{"type":"leave_request|it_ticket|expense_request","title":"...","detail":"...","priority":"low|normal|high","category":"...","start_date":"YYYY-MM-DD","end_date":"YYYY-MM-DD"}
+   ADDIM 2 (Təsdiq): Yalnız əgər söhbətin ƏVVƏLKİ sənin mesajında artıq təklif irəli sürmüsənsə VƏ istifadəçi indi "bəli/hə/təsdiqləyirəm/et" kimi razılıq bildirirsə, cavabının sonunda bunu yaz: ACTION:{"type":"leave_request|it_ticket|expense_request","title":"...","detail":"...","priority":"low|normal|high","category":"...","start_date":"YYYY-MM-DD","end_date":"YYYY-MM-DD","amount":rəqəm_ve_ya_null}
    İstifadəçi "yox" desə və ya fikrini dəyişsə, ACTION yazma, "Ləğv edildi" de.
    VACİB: ACTION marker-i yazırsansa, o, cavabının MÜTLƏQ SON HİSSƏSİ olmalıdır — ondan sonra HEÇ BİR söz, HEÇ BİR salamlama, HEÇ BİR emoji yazma.
    - leave_request üçün category: "annual" | "sick" | "unpaid" | "emergency"; start_date/end_date MÜTLƏQ doldurulmalıdır (il göstərilməsə, ${new Date().getFullYear()} il qəbul et)
    - it_ticket üçün category: "hardware" | "software" | "access" | "network"; priority: problemi ciddiliyinə görə seç (mes: "işləmir" = high, "yavaşdır" = normal); start_date/end_date lazım deyil, boş buraxa bilərsən
-   - expense_request üçün category: "travel" | "meals" | "office" | "other"; start_date/end_date lazım deyil
+   - expense_request üçün category: "travel" | "meals" | "office" | "other"; start_date/end_date lazım deyil; "amount" sahəsinə MÜTLƏQ rəqəm (yalnız ədəd, valyuta olmadan) yaz, məs: 2500
    ƏLAVƏ (Email): Əgər istifadəçi email GÖNDƏRMƏK istəyirsə, 2-addımlı prosesə tabedir: ADDIM 1-də draft-ı göstər, təsdiq soruş; ADDIM 2-də: ACTION:{"type":"send_email","to":"email@ünvanı","subject":"...","title":"Email göndərildi","detail":"..."}
    VACİB: "to" sahəsi YALNIZ yuxarıdakı "ŞİRKƏT İŞÇİ DİREKTORİYASI"ndakı real email ünvanlarından biri ola bilər. Direktoriyada yoxdursa, ünvan uydurma — "Bu şəxsin email ünvanı sistemdə tapılmadı" de.
    ƏLAVƏ (Görüş): Əgər istifadəçi görüş/meeting yaratmaq istəyirsə ("sabah 3-də görüş qur" kimi), 2-addımlı prosesə tabedir: ADDIM 1-də tarix/saat/başlığı göstər, təsdiq soruş; ADDIM 2-də: ACTION:{"type":"create_meeting","title":"...","startDateTime":"YYYY-MM-DDTHH:mm:00+04:00","endDateTime":"YYYY-MM-DDTHH:mm:00+04:00","description":"..."}
@@ -565,6 +565,10 @@ QAYDALAR:
             };
           } else {
           // Real əməliyyat sorğusunu verilənlər bazasına yaz (status: pending, manager təsdiqini gözləyir)
+          // 2000 AZN-dən yuxarı xərc sorğuları — Expense Policy-yə əsasən 2 təsdiq (Manager + Finance) tələb edir
+          const amountValue = actionData.amount ? parseFloat(actionData.amount) : null;
+          const requiredApprovals = (actionData.type === 'expense_request' && amountValue && amountValue > 2000) ? 2 : 1;
+
           const { data: savedAction, error: actionError } = await supabase
             .from('action_requests')
             .insert({
@@ -577,6 +581,8 @@ QAYDALAR:
               category: actionData.category || null,
               start_date: actionData.start_date || null,
               end_date: actionData.end_date || null,
+              amount: amountValue,
+              required_approvals: requiredApprovals,
               status: 'pending'
             })
             .select()
@@ -1126,39 +1132,76 @@ app.post('/actions/:id/approve', requireAuth, async (req, res) => {
     const approver = req.employee;
 
     const { data: actionCheck, error: actionCheckError } = await supabase
-      .from('action_requests').select('type, employee_id').eq('id', req.params.id).single();
+      .from('action_requests').select('*').eq('id', req.params.id).single();
     if (actionCheckError || !actionCheck) return res.status(404).json({ error: 'Sorğu tapılmadı' });
+
+    if (actionCheck.status !== 'pending') {
+      return res.status(400).json({ error: 'Bu sorğu artıq həll olunub' });
+    }
 
     const allowed = await canManageAction(approver, actionCheck);
     if (!allowed) {
       return res.status(403).json({ error: 'Bu sorğunu təsdiqləmək üçün icazəniz yoxdur (səlahiyyətli departament deyilsiniz)' });
     }
 
+    // Bu approver artıq təsdiqləyibsə, təkrar sayılmasın
+    const { data: existingApproval } = await supabase
+      .from('action_approvals')
+      .select('id')
+      .eq('action_request_id', req.params.id)
+      .eq('approver_id', approver.id)
+      .maybeSingle();
+    if (existingApproval) {
+      return res.status(400).json({ error: 'Siz bu sorğunu artıq təsdiqləmisiniz' });
+    }
+
+    // Bu təsdiqi qeydə al
+    await supabase.from('action_approvals').insert({
+      action_request_id: req.params.id, approver_id: approver.id, approver_role: approver.role
+    });
+
+    // Neçə fərqli təsdiq toplanıb, yoxla
+    const { count: approvalsCount } = await supabase
+      .from('action_approvals')
+      .select('*', { count: 'exact', head: true })
+      .eq('action_request_id', req.params.id);
+
+    const requiredApprovals = actionCheck.required_approvals || 1;
+    const isFullyApproved = approvalsCount >= requiredApprovals;
+
     const { data: updated, error: updateError } = await supabase
       .from('action_requests')
-      .update({ status: 'approved', approved_by: approver.id, approved_at: new Date().toISOString() })
+      .update({
+        status: isFullyApproved ? 'approved' : 'pending',
+        approved_by: approver.id,
+        approved_at: isFullyApproved ? new Date().toISOString() : null
+      })
       .eq('id', req.params.id)
-      .select('*, employees!employee_id(name)')
+      .select('*, employees!employee_id(name, company_id)')
       .single();
     if (updateError) throw updateError;
 
-    // Əgər bu bir məzuniyyət sorğusudursa, Google Calendar-a yaz (Router-in "leave_approved" route-u ilə)
-    if (updated.type === 'leave_request') {
-      callVuseraRouter('leave_approved', {
-        employeeName: updated.employees?.name,
-        title: updated.title,
-        detail: updated.detail,
-        approvedBy: approver.name,
-        startDate: updated.start_date,
-        endDate: updated.end_date
-      });
+    if (isFullyApproved) {
+      // Əgər bu bir məzuniyyət sorğusudursa, Google Calendar-a yaz
+      if (updated.type === 'leave_request') {
+        callVuseraRouter('leave_approved', {
+          employeeName: updated.employees?.name,
+          title: updated.title,
+          detail: updated.detail,
+          approvedBy: approver.name,
+          startDate: updated.start_date,
+          endDate: updated.end_date
+        });
+      }
+      createNotification(updated.employees.company_id, updated.employee_id,
+        `"${updated.title}" sorğunuz TAM təsdiqləndi ✅`, updated.id);
+    } else {
+      // Qismən təsdiq — işçiyə və qalan təsdiqləyicilərə məlumat ver
+      createNotification(updated.employees.company_id, updated.employee_id,
+        `"${updated.title}" sorğunuz ${approvalsCount}/${requiredApprovals} təsdiq aldı — daha bir təsdiq gözlənilir.`, updated.id);
     }
 
-    // İşçiyə bildiriş göndər
-    createNotification(updated.company_id, updated.employee_id,
-      `"${updated.title}" sorğunuz təsdiqləndi ✅`, updated.id);
-
-    res.json({ success: true, action: updated });
+    res.json({ success: true, action: updated, approvalsCount, requiredApprovals, isFullyApproved });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
