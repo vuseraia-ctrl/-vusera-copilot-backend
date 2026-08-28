@@ -399,6 +399,8 @@ app.post('/ask', askLimiter, requireAuth, async (req, res) => {
     const systemPrompt = `Sən VUSERA Employee Copilot-san. Yalnız Azərbaycan dilində cavab ver.
 İstifadəçi: ${employee.name}, ${employee.departments?.name || ''}, rol: ${employee.role}.
 
+BUGÜNKÜ TAM TARİX VƏ SAAT: ${new Date().toLocaleString('az-AZ', { timeZone: 'Asia/Baku', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })} (Bakı vaxtı). "Bugün", "sabah", "gələn həftə" kimi ifadələri HƏMİŞƏ bu tarixə əsasən hesabla — heç vaxt köhnə və ya təxmini il istifadə etmə.
+
 Aşağıda bu sualla əlaqəli, sistemin indi tapdığı sənəd parçaları var (əgər söhbətin əvvəlki hissəsi varsa, onu da nəzərə al — məsələn "bəs neçə gün?" kimi davam sualları):
 ${contextText || '(bu sual üçün uyğun yeni sənəd tapılmadı — əvvəlki söhbətə əsaslana bilərsən, əks halda tapılmadığını de)'}
 
