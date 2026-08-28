@@ -1263,9 +1263,19 @@ app.post('/actions/:id/reject', requireAuth, async (req, res) => {
 app.get('/pending-actions/:companyId', requireAuth, async (req, res) => {
   try {
     const viewer = req.employee;
+    const today = new Date().toISOString().slice(0, 10);
 
-    if (!isManagerRole(viewer.role)) {
-      return res.status(403).json({ error: 'Yalnız manager/admin rolları gözləyən sorğuları görə bilər' });
+    // Bu istifadəçinin aktiv delegation-ları (müvəqqəti səlahiyyətləri) var mı?
+    const { data: myDelegations } = await supabase
+      .from('approval_delegations')
+      .select('department_name')
+      .eq('delegate_id', viewer.id)
+      .lte('start_date', today)
+      .gte('end_date', today);
+    const delegatedDepts = (myDelegations || []).map(d => d.department_name);
+
+    if (!isManagerRole(viewer.role) && viewer.role !== 'Admin' && delegatedDepts.length === 0) {
+      return res.status(403).json({ error: 'Yalnız manager/admin rolları (və ya delegation almış şəxslər) gözləyən sorğuları görə bilər' });
     }
 
     const { data, error } = await supabase
@@ -1282,10 +1292,9 @@ app.get('/pending-actions/:companyId', requireAuth, async (req, res) => {
     } else {
       const viewerDeptName = viewer.departments?.name;
       filtered = data.filter(action => {
-        if (action.type === 'it_ticket') return viewerDeptName === 'IT';
-        if (action.type === 'expense_request') return viewerDeptName === 'Finance';
-        if (action.type === 'leave_request') return viewerDeptName === 'HR';
-        return false;
+        const actionDept = action.type === 'it_ticket' ? 'IT' : action.type === 'expense_request' ? 'Finance' : action.type === 'leave_request' ? 'HR' : null;
+        if (!actionDept) return false;
+        return viewerDeptName === actionDept || delegatedDepts.includes(actionDept);
       });
     }
 
