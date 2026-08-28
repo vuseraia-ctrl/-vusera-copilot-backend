@@ -644,6 +644,46 @@ QAYDALAR:
 // İki üsulla məzmun qəbul edir:
 //   1) "content" — sadə mətn (əvvəlki kimi)
 //   2) "fileBase64" + "fileType" ('pdf' və ya 'docx') — real fayldan mətn çıxarır
+// ---- Qəbz/Faktura oxuma — real şəkil/PDF-dən xərc məlumatını çıxarır ----
+app.post('/receipts/extract', requireAuth, async (req, res) => {
+  try {
+    const { fileBase64, fileType } = req.body;
+    if (!fileBase64 || !fileType) {
+      return res.status(400).json({ error: 'fileBase64 və fileType tələb olunur' });
+    }
+
+    const mediaType = fileType === 'pdf' ? 'application/pdf'
+      : fileType === 'jpg' || fileType === 'jpeg' ? 'image/jpeg'
+      : fileType === 'png' ? 'image/png'
+      : null;
+    if (!mediaType) return res.status(400).json({ error: 'fileType "pdf", "jpg", "jpeg" və ya "png" olmalıdır' });
+
+    const contentBlockType = fileType === 'pdf' ? 'document' : 'image';
+
+    const message = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 500,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: contentBlockType, source: { type: 'base64', media_type: mediaType, data: fileBase64 } },
+          { type: 'text', text: 'Bu, bir qəbz və ya fakturadır. Aşağıdakı JSON formatında, YALNIZ JSON qaytar (başqa mətn yazma): {"vendor":"satıcı adı","amount":rəqəm,"currency":"AZN/USD/EUR","date":"YYYY-MM-DD","category":"travel|meals|office|other","description":"qısa təsvir"}. Əgər bir sahəni tapa bilmirsənsə, null yaz.' }
+        ]
+      }]
+    });
+
+    const rawText = message.content.map(b => b.text || '').join('');
+    const jsonMatch = rawText.match(/\{.*\}/s);
+    if (!jsonMatch) return res.status(422).json({ error: 'Qəbzdən məlumat çıxarıla bilmədi' });
+
+    const extracted = JSON.parse(jsonMatch[0]);
+    res.json({ success: true, extracted });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 app.post('/ingest', ingestLimiter, requireAuth, async (req, res) => {
   try {
     if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin sənəd yükləyə bilər' });
