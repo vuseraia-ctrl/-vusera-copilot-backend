@@ -77,6 +77,23 @@ async function sendEmailViaMake(to, subject, body) {
     return { success: false, error: e.message };
   }
 }
+// Google Calendar-da (real) müəyyən tarix aralığında məşğulluq yoxlayır
+async function checkCalendarAvailability(timeMin, timeMax) {
+  if (!process.env.MAKE_CALENDAR_CHECK_URL) return null;
+  try {
+    const response = await fetch(process.env.MAKE_CALENDAR_CHECK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ timeMin, timeMax })
+    });
+    const data = await response.json();
+    return data.busy || [];
+  } catch (e) {
+    console.error('Calendar yoxlanıla bilmədi:', e.message);
+    return null;
+  }
+}
+
 // Sualın email haqqında olub-olmadığını sadəcə açar sözlərlə yoxlayır
 function isEmailRelated(question) {
   const keywords = ['email', 'e-mail', 'e-poçt', 'epoçt', 'poçt', 'məktub', 'inbox', 'gələn qutu'];
@@ -271,6 +288,19 @@ app.post('/ask', askLimiter, requireAuth, async (req, res) => {
       ? existingLeaves.map(l => `- ${l.start_date} — ${l.end_date} (${l.status === 'approved' ? 'təsdiqlənib' : 'gözləyir'}): ${l.title}`).join('\n')
       : '(bu işçinin heç bir aktiv məzuniyyət sorğusu yoxdur)';
 
+    // 3.65) Əgər sual məzuniyyətlə əlaqəlidirsə, REAL Google Calendar-da (növbəti 60 gün) məşğulluğu yoxla
+    let calendarBusyText = '';
+    if (/mezuniyy|məzuniyy|leave|vacation|tetil|tətil/i.test(question)) {
+      const now = new Date();
+      const future = new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000);
+      const busy = await checkCalendarAvailability(now.toISOString(), future.toISOString());
+      if (busy && busy.length > 0) {
+        calendarBusyText = `\nGOOGLE CALENDAR-DA MƏŞĞUL VAXTLAR (növbəti 60 gün, real təqvimdən):\n${busy.map(b => `- ${b.start} — ${b.end}`).join('\n')}\n`;
+      } else if (busy) {
+        calendarBusyText = '\nGOOGLE CALENDAR-DA MƏŞĞUL VAXTLAR: (növbəti 60 gündə heç bir məşğulluq yoxdur)\n';
+      }
+    }
+
     // 3.7) Əgər sual email haqqındadırsa, real inbox-u oxu
     let emailsText = '';
     if (isEmailRelated(question)) {
@@ -316,6 +346,7 @@ ${contextText || '(bu sual üçün uyğun yeni sənəd tapılmadı — əvvəlki
 
 MÖVCUD MƏZUNİYYƏT SORĞULARI (bu işçinin, verilənlər bazasından — real tarix üst-üstə düşməsini yoxlamaq üçün):
 ${existingLeavesText}
+${calendarBusyText}
 
 ${emailsText ? `SON EMAİLLƏR (Gmail-dən indi oxunub):\n${emailsText}\n` : ''}
 
@@ -327,7 +358,7 @@ QAYDALAR:
 2. Əgər kontekst boşdursa və ya sual bununla əlaqəli deyilsə, "Bu məlumat mövcud bilik bazasında tapılmadı" de.
 3. ƏMƏLİYYAT (məzuniyyət/xərc/IT problemi) İKİ ADDIMLI PROSESDİR:
    ADDIM 1 (Təklif): İstifadəçi ilk dəfə bir iş görülməsini istəyəndə, lazımi məlumatı (tarix, məbləğ, problem) topla, XÜLASƏ ET və aydın şəkildə TƏSDİQ SORUŞ (məs: "Bunu təsdiqləyirsinizmi?"). Bu addımda HEÇ VAXT ACTION yazma.
-   ƏGƏR TİP leave_request-dirsə: aşağıdakı "MÖVCUD MƏZUNİYYƏT SORĞULARI" siyahısı ilə TARİX ÜST-ÜSTƏ DÜŞMƏSİNİ yoxla, üst-üstə düşmə varsa bunu AÇIQ şəkildə xəbərdarlıq et (təsdiq soruşarkən).
+   ƏGƏR TİP leave_request-dirsə: aşağıdakı "MÖVCUD MƏZUNİYYƏT SORĞULARI" siyahısı VƏ "GOOGLE CALENDAR-DA MƏŞĞUL VAXTLAR" ilə TARİX ÜST-ÜSTƏ DÜŞMƏSİNİ yoxla, üst-üstə düşmə varsa bunu AÇIQ şəkildə xəbərdarlıq et (təsdiq soruşarkən).
    ADDIM 2 (Təsdiq): Yalnız əgər söhbətin ƏVVƏLKİ sənin mesajında artıq təklif irəli sürmüsənsə VƏ istifadəçi indi "bəli/hə/təsdiqləyirəm/et" kimi razılıq bildirirsə, cavabının sonunda bunu yaz: ACTION:{"type":"leave_request|it_ticket|expense_request","title":"...","detail":"...","priority":"low|normal|high","category":"...","start_date":"YYYY-MM-DD","end_date":"YYYY-MM-DD"}
    İstifadəçi "yox" desə və ya fikrini dəyişsə, ACTION yazma, "Ləğv edildi" de.
    VACİB: ACTION marker-i yazırsansa, o, cavabının MÜTLƏQ SON HİSSƏSİ olmalıdır — ondan sonra HEÇ BİR söz, HEÇ BİR salamlama, HEÇ BİR emoji yazma.
