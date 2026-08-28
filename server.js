@@ -1197,6 +1197,73 @@ app.get('/dashboard/:companyId', requireAuth, async (req, res) => {  try {
   }
 });
 
+// ---- Advanced Analytics — Top Questions, Department breakdown, Ən aktiv işçilər ----
+app.get('/analytics/:companyId', requireAuth, async (req, res) => {
+  try {
+    if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin analitikanı görə bilər' });
+    const companyId = req.params.companyId;
+
+    // 1) Top Questions — ən çox təkrarlanan (eyni mətnli) suallar
+    const { data: allQuestions } = await supabase
+      .from('chat_logs')
+      .select('question')
+      .eq('company_id', companyId);
+
+    const qCounts = {};
+    (allQuestions || []).forEach(q => {
+      const norm = (q.question || '').trim().toLowerCase().replace(/[?!.,]/g, '');
+      if (!norm) return;
+      qCounts[norm] = (qCounts[norm] || 0) + 1;
+    });
+    const topQuestions = Object.entries(qCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([question, count]) => ({ question, count }));
+
+    // 2) Departament üzrə sorğu sayı
+    const { data: allRequests } = await supabase
+      .from('action_requests')
+      .select('type, status, employees!employee_id(departments(name))')
+      .eq('company_id', companyId);
+
+    const deptCounts = {};
+    (allRequests || []).forEach(r => {
+      const dept = r.employees?.departments?.name || 'Naməlum';
+      deptCounts[dept] = (deptCounts[dept] || 0) + 1;
+    });
+    const requestsByDepartment = Object.entries(deptCounts).map(([department, count]) => ({ department, count }));
+
+    // 3) Növ üzrə sorğu sayı (leave/it/expense)
+    const typeCounts = {};
+    (allRequests || []).forEach(r => { typeCounts[r.type] = (typeCounts[r.type] || 0) + 1; });
+    const requestsByType = Object.entries(typeCounts).map(([type, count]) => ({ type, count }));
+
+    // 4) Status üzrə sorğu sayı
+    const statusCounts = {};
+    (allRequests || []).forEach(r => { statusCounts[r.status] = (statusCounts[r.status] || 0) + 1; });
+    const requestsByStatus = Object.entries(statusCounts).map(([status, count]) => ({ status, count }));
+
+    // 5) Ən aktiv işçilər (ən çox sual verən, ilk 5)
+    const { data: allChats } = await supabase
+      .from('chat_logs')
+      .select('employee_id, employees!employee_id(name)')
+      .eq('company_id', companyId);
+    const empCounts = {};
+    (allChats || []).forEach(c => {
+      const name = c.employees?.name || 'Naməlum';
+      empCounts[name] = (empCounts[name] || 0) + 1;
+    });
+    const mostActiveEmployees = Object.entries(empCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([name, count]) => ({ name, count }));
+
+    res.json({ topQuestions, requestsByDepartment, requestsByType, requestsByStatus, mostActiveEmployees });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ---- Proaktiv AI: Gözləyən sorğular üçün xatırlatmalar ----
 // Bu endpoint xaricdən (Make.com-un "scheduled" — gündəlik) çağırılmalıdır.
 // 2 gündən çox gözləyən sorğular üçün: manager-ə "hələ baxılmayıb" xatırlatması,
