@@ -738,6 +738,26 @@ app.post('/employees', requireAuth, async (req, res) => {
       .single();
     if (error) throw error;
 
+    // ---- ONBOARDING WORKFLOW — avtomatik addımlar ----
+    // 1) Yeni işçiyə xoş gəldin email-i (giriş məlumatları ilə)
+    sendEmailViaMake(
+      email,
+      `VUSERA-ya xoş gəldiniz, ${name}!`,
+      `Salam ${name},\n\nNovaTech Solutions-a xoş gəldiniz! VUSERA Employee Copilot hesabınız hazırdır.\n\nGiriş məlumatlarınız:\nEmail: ${email}\nMüvəqqəti parol: ${tempPassword}\n\nİlk girişdən sonra parolunuzu dəyişməyiniz tövsiyə olunur.\n\nUğurlar!\nVUSERA`
+    );
+
+    // 2) IT departamentinə bildiriş (avadanlıq/giriş hazırlığı üçün)
+    const { data: itManagers } = await supabase
+      .from('employees')
+      .select('id, role, departments(name)')
+      .eq('company_id', companyId);
+    (itManagers || []).filter(m => m.role === 'Admin' || (m.role.includes('Manager') && m.departments?.name === 'IT'))
+      .forEach(m => createNotification(companyId, m.id, `👋 Yeni işçi: ${name} (${role}) başladı — noutbuk/giriş hazırlığı lazımdır.`, null));
+
+    // 3) HR departamentinə bildiriş (sənədləşmə üçün)
+    (itManagers || []).filter(m => m.role === 'Admin' || (m.role.includes('Manager') && m.departments?.name === 'HR'))
+      .forEach(m => createNotification(companyId, m.id, `👋 Yeni işçi qeydə alındı: ${name} (${role}) — HR sənədləşməsi lazımdır.`, null));
+
     res.json({ success: true, employee: data, temporaryPassword: tempPassword });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -779,7 +799,48 @@ app.delete('/employees/:id', requireAuth, async (req, res) => {
       .select()
       .single();
     if (error) throw error;
-    res.json({ success: true, employee: data });
+
+    // ---- OFFBOARDING WORKFLOW — avtomatik addımlar ----
+    // 1) Bütün gələcək aktiv görüşlərini ləğv et
+    const { data: activeMeetings } = await supabase
+      .from('meetings')
+      .select('*')
+      .eq('employee_id', data.id)
+      .eq('status', 'active');
+    for (const m of (activeMeetings || [])) {
+      if (m.calendar_event_id) {
+        const cancelResult = await cancelMeetingViaMake(m.calendar_event_id);
+        if (cancelResult.success) {
+          await supabase.from('meetings').update({ status: 'cancelled' }).eq('id', m.id);
+        }
+      }
+    }
+
+    // 2) IT departamentinə bildiriş (avadanlıq geri qaytarılması, giriş bağlanması üçün)
+    const { data: allStaff } = await supabase
+      .from('employees')
+      .select('id, role, departments(name)')
+      .eq('company_id', data.company_id);
+    (allStaff || []).filter(m => m.role === 'Admin' || (m.role.includes('Manager') && m.departments?.name === 'IT'))
+      .forEach(m => createNotification(data.company_id, m.id, `👋 ${data.name} işdən ayrılır — avadanlıq geri qaytarılmalı, giriş bağlanmalıdır.`, null));
+
+    // 3) HR departamentinə bildiriş (son sənədləşmə üçün)
+    (allStaff || []).filter(m => m.role === 'Admin' || (m.role.includes('Manager') && m.departments?.name === 'HR'))
+      .forEach(m => createNotification(data.company_id, m.id, `👋 ${data.name} işdən ayrılır — son hesablaşma/sənədləşmə lazımdır.`, null));
+
+    // 4) Gözləyən (pending) sorğuları yoxla — Admin-ə xəbərdarlıq et ki, unudulmasın
+    const { data: pendingReqs } = await supabase
+      .from('action_requests')
+      .select('id, type, title')
+      .eq('employee_id', data.id)
+      .eq('status', 'pending');
+    if (pendingReqs && pendingReqs.length > 0) {
+      (allStaff || []).filter(m => m.role === 'Admin')
+        .forEach(m => createNotification(data.company_id, m.id,
+          `⚠️ ${data.name} işdən ayrılır, amma ${pendingReqs.length} gözləyən sorğusu var (həll edilməmiş) — nəzərdən keçirin.`, null));
+    }
+
+    res.json({ success: true, employee: data, meetingsCancelled: (activeMeetings || []).length, pendingRequestsFlagged: (pendingReqs || []).length });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
