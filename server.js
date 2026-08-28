@@ -652,6 +652,38 @@ QAYDALAR:
 //   1) "content" — sadə mətn (əvvəlki kimi)
 //   2) "fileBase64" + "fileType" ('pdf' və ya 'docx') — real fayldan mətn çıxarır
 // ---- Qəbz/Faktura oxuma — real şəkil/PDF-dən xərc məlumatını çıxarır ----
+// Email paneli üçün — birbaşa inbox-u gətirir (chat axınından kənar)
+app.get('/emails', requireAuth, async (req, res) => {
+  try {
+    const emails = await readRecentEmails();
+    res.json({ emails });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Email paneli üçün — birbaşa email göndərir (chat axınından kənar, sadə forma üçün)
+app.post('/emails/send', requireAuth, async (req, res) => {
+  try {
+    const { to, subject, body } = req.body;
+    if (!to || !subject || !body) return res.status(400).json({ error: 'to, subject və body tələb olunur' });
+
+    // Yalnız real direktoriyadakı ünvanlara icazə ver (uydurma qarşısını almaq üçün)
+    const { data: match } = await supabase
+      .from('employees')
+      .select('id')
+      .eq('company_id', req.employee.company_id)
+      .eq('email', to)
+      .maybeSingle();
+    if (!match) return res.status(400).json({ error: 'Bu email ünvanı şirkət direktoriyasında tapılmadı' });
+
+    const result = await sendEmailViaMake(to, subject, body);
+    res.json({ success: result.success });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/receipts/extract', requireAuth, async (req, res) => {
   try {
     const { fileBase64, fileType } = req.body;
