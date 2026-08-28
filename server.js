@@ -1351,7 +1351,40 @@ app.post('/proactive/check-reminders', async (req, res) => {
       meetingRemindersSent++;
     }
 
-    res.json({ success: true, remindersSent, meetingRemindersSent });
+    // ---- IT Auto-Escalation — yüksək prioritetli, 4+ saatdır həll olunmayan IT ticket-ləri Admin-ə yüksəldir ----
+    const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
+
+    const { data: staleHighPriorityTickets } = await supabase
+      .from('action_requests')
+      .select('*, employees!employee_id(name, company_id)')
+      .eq('type', 'it_ticket')
+      .eq('priority', 'high')
+      .eq('status', 'pending')
+      .eq('escalated', false)
+      .lt('created_at', fourHoursAgo);
+
+    let escalatedCount = 0;
+    for (const ticket of staleHighPriorityTickets || []) {
+      const emp = ticket.employees;
+      if (!emp) continue;
+
+      const { data: admins } = await supabase
+        .from('employees')
+        .select('id')
+        .eq('company_id', emp.company_id)
+        .eq('role', 'Admin');
+
+      for (const admin of admins || []) {
+        await createNotification(emp.company_id, admin.id,
+          `🚨 YÜKSƏLDİLDİ: "${ticket.title}" (${emp.name}) — yüksək prioritetli IT problemi 4+ saatdır həll olunmayıb!`,
+          ticket.id);
+      }
+
+      await supabase.from('action_requests').update({ escalated: true }).eq('id', ticket.id);
+      escalatedCount++;
+    }
+
+    res.json({ success: true, remindersSent, meetingRemindersSent, escalatedCount });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
