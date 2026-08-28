@@ -48,50 +48,42 @@ async function notifyMake(payload) {
   }
 }
 
-// Gmail-dən son emailları oxuyur (Make.com vasitəsilə, sinxron sorğu ilə)
-async function readRecentEmails() {
-  if (!process.env.MAKE_EMAIL_READ_URL) return [];
+// ---- VUSERA Actions Router — bütün Make.com inteqrasiyaları TƏK bir webhook-dan keçir ----
+// (Pulsuz Make planında yalnız 2 aktiv ssenari icazəli olduğu üçün, hamısını "action" sahəsinə görə
+// bir Router-də birləşdirmişik: send_email | check_calendar | create_meeting | read_emails)
+async function callVuseraRouter(action, payload) {
+  if (!process.env.MAKE_ROUTER_URL) return null;
   try {
-    const response = await fetch(process.env.MAKE_EMAIL_READ_URL);
-    const data = await response.json();
-    return data.emails || [];
+    const response = await fetch(process.env.MAKE_ROUTER_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, ...payload })
+    });
+    return await response.json();
   } catch (e) {
-    console.error('Emaillər oxuna bilmədi:', e.message);
-    return [];
+    console.error(`Router (${action}) xətası:`, e.message);
+    return null;
   }
 }
 
-// Gmail-dən email göndərir (Make.com vasitəsilə, sinxron sorğu ilə)
-async function sendEmailViaMake(to, subject, body) {
-  if (!process.env.MAKE_EMAIL_SEND_URL) return { success: false, error: 'Email göndərmə qurulmayıb' };
-  try {
-    const response = await fetch(process.env.MAKE_EMAIL_SEND_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to, subject, body })
-    });
-    const data = await response.json();
-    return { success: data.success === true };
-  } catch (e) {
-    console.error('Email göndərilmədi:', e.message);
-    return { success: false, error: e.message };
-  }
+async function readRecentEmails() {
+  const data = await callVuseraRouter('read_emails', {});
+  return data?.emails || [];
 }
-// Google Calendar-da (real) müəyyən tarix aralığında məşğulluq yoxlayır
+
+async function sendEmailViaMake(to, subject, body) {
+  const data = await callVuseraRouter('send_email', { to, subject, body });
+  return { success: data?.success === true };
+}
+
 async function checkCalendarAvailability(timeMin, timeMax) {
-  if (!process.env.MAKE_CALENDAR_CHECK_URL) return null;
-  try {
-    const response = await fetch(process.env.MAKE_CALENDAR_CHECK_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ timeMin, timeMax })
-    });
-    const data = await response.json();
-    return data.busy || [];
-  } catch (e) {
-    console.error('Calendar yoxlanıla bilmədi:', e.message);
-    return null;
-  }
+  const data = await callVuseraRouter('check_calendar', { timeMin, timeMax });
+  return data?.busy || [];
+}
+
+async function createMeetingViaMake(title, startDateTime, endDateTime, description) {
+  const data = await callVuseraRouter('create_meeting', { title, startDateTime, endDateTime, description });
+  return { success: data?.success === true, eventLink: data?.eventLink };
 }
 
 // Sualın email haqqında olub-olmadığını sadəcə açar sözlərlə yoxlayır
@@ -365,8 +357,10 @@ QAYDALAR:
    - leave_request üçün category: "annual" | "sick" | "unpaid" | "emergency"; start_date/end_date MÜTLƏQ doldurulmalıdır (il göstərilməsə, ${new Date().getFullYear()} il qəbul et)
    - it_ticket üçün category: "hardware" | "software" | "access" | "network"; priority: problemi ciddiliyinə görə seç (mes: "işləmir" = high, "yavaşdır" = normal); start_date/end_date lazım deyil, boş buraxa bilərsən
    - expense_request üçün category: "travel" | "meals" | "office" | "other"; start_date/end_date lazım deyil
-   ƏLAVƏ: Əgər istifadəçi email GÖNDƏRMƏK istəyirsə (kiməsə yazmaq, cavab yazmaq), bu da eyni 2-addımlı prosesə tabedir: ADDIM 1-də draft-ı göstər (kimə, mövzu, mətn) və təsdiq soruş; ADDIM 2-də (təsdiqdən sonra) bunu yaz: ACTION:{"type":"send_email","to":"email@ünvanı","subject":"...","title":"Email göndərildi","detail":"..."}
-   VACİB: "to" sahəsi YALNIZ yuxarıdakı "ŞİRKƏT İŞÇİ DİREKTORİYASI"ndakı real email ünvanlarından biri ola bilər. Əgər istədiyi şəxs direktoriyada yoxdursa, HEÇ VAXT ünvan uydurma — "Bu şəxsin email ünvanı sistemdə tapılmadı" de.
+   ƏLAVƏ (Email): Əgər istifadəçi email GÖNDƏRMƏK istəyirsə, 2-addımlı prosesə tabedir: ADDIM 1-də draft-ı göstər, təsdiq soruş; ADDIM 2-də: ACTION:{"type":"send_email","to":"email@ünvanı","subject":"...","title":"Email göndərildi","detail":"..."}
+   VACİB: "to" sahəsi YALNIZ yuxarıdakı "ŞİRKƏT İŞÇİ DİREKTORİYASI"ndakı real email ünvanlarından biri ola bilər. Direktoriyada yoxdursa, ünvan uydurma — "Bu şəxsin email ünvanı sistemdə tapılmadı" de.
+   ƏLAVƏ (Görüş): Əgər istifadəçi görüş/meeting yaratmaq istəyirsə ("sabah 3-də görüş qur" kimi), 2-addımlı prosesə tabedir: ADDIM 1-də tarix/saat/başlığı göstər, təsdiq soruş; ADDIM 2-də: ACTION:{"type":"create_meeting","title":"...","startDateTime":"YYYY-MM-DDTHH:mm:00+04:00","endDateTime":"YYYY-MM-DDTHH:mm:00+04:00","description":"..."}
+   (Vaxt zonası həmişə +04:00 (Bakı) olsun, bitmə vaxtı göstərilməzsə başlanğıcdan 30 dəqiqə sonra qəbul et)
 4. Adi cavab üçün sonunda: SOURCE: Sənəd adı — Section X.X
 5. Qısa, 2-4 cümlə.
 6. Əgər yuxarıda "SON EMAİLLƏR" bölməsi verilibsə, istifadəçi bunları xülasə etməyi istəyirsə, hər emaili 1 sətirdə (kimdən, mövzu) yığcam göstər.`;
@@ -410,6 +404,16 @@ QAYDALAR:
               title: emailResult.success ? `Email göndərildi: ${actionData.to}` : 'Email göndərilmədi',
               detail: actionData.subject || '',
               status: emailResult.success ? 'sent' : 'failed'
+            };
+          } else if (actionData.type === 'create_meeting') {
+            // Görüş yaratma - approval axınına yox, birbaşa Google Calendar-a gedir
+            const meetingResult = await createMeetingViaMake(actionData.title, actionData.startDateTime, actionData.endDateTime, actionData.description || '');
+            createdAction = {
+              id: 'meeting-' + Date.now(),
+              type: 'create_meeting',
+              title: meetingResult.success ? actionData.title : 'Görüş yaradılmadı',
+              detail: actionData.startDateTime || '',
+              status: meetingResult.success ? 'created' : 'failed'
             };
           } else {
           // Real əməliyyat sorğusunu verilənlər bazasına yaz (status: pending, manager təsdiqini gözləyir)
