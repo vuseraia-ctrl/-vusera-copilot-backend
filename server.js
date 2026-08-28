@@ -1117,7 +1117,6 @@ function isManagerRole(role) {
 // Qayda: leave_request -> HR, it_ticket -> IT, expense_request -> Finance (kim yaratsa da fərq etməz)
 async function canManageAction(approver, action) {
   if (approver.role === 'Admin') return true;
-  if (!isManagerRole(approver.role)) return false;
 
   const targetDept = action.type === 'it_ticket' ? 'IT'
     : action.type === 'expense_request' ? 'Finance'
@@ -1125,8 +1124,23 @@ async function canManageAction(approver, action) {
     : null;
   if (!targetDept) return false;
 
-  const { data: dept } = await supabase.from('departments').select('name').eq('id', approver.department_id).single();
-  return dept?.name === targetDept;
+  if (isManagerRole(approver.role)) {
+    const { data: dept } = await supabase.from('departments').select('name').eq('id', approver.department_id).single();
+    if (dept?.name === targetDept) return true;
+  }
+
+  // Delegation yoxlanışı — bu şəxsə müvəqqəti olaraq bu departamentin təsdiq səlahiyyəti verilibmi?
+  const today = new Date().toISOString().slice(0, 10);
+  const { data: delegation } = await supabase
+    .from('approval_delegations')
+    .select('id')
+    .eq('delegate_id', approver.id)
+    .eq('department_name', targetDept)
+    .lte('start_date', today)
+    .gte('end_date', today)
+    .maybeSingle();
+
+  return !!delegation;
 }
 
 app.post('/actions/:id/approve', requireAuth, async (req, res) => {
@@ -1353,6 +1367,67 @@ app.get('/dashboard/:companyId', requireAuth, async (req, res) => {  try {
 });
 
 // ---- Advanced Analytics — Top Questions, Department breakdown, Ən aktiv işçilər ----
+// ---- Approval Delegation (Granular RBAC) — Admin başqasına müvəqqəti təsdiq səlahiyyəti verə bilər ----
+app.post('/delegations', requireAuth, async (req, res) => {
+  try {
+    if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin delegation təyin edə bilər' });
+    const { delegateId, departmentName, startDate, endDate } = req.body;
+    if (!delegateId || !departmentName || !startDate || !endDate) {
+      return res.status(400).json({ error: 'delegateId, departmentName, startDate, endDate tələb olunur' });
+    }
+    if (!['IT', 'HR', 'Finance'].includes(departmentName)) {
+      return res.status(400).json({ error: 'departmentName "IT", "HR" və ya "Finance" olmalıdır' });
+    }
+
+    const { data, error } = await supabase
+      .from('approval_delegations')
+      .insert({
+        company_id: req.employee.company_id,
+        delegate_id: delegateId,
+        department_name: departmentName,
+        start_date: startDate,
+        end_date: endDate,
+        created_by: req.employee.id
+      })
+      .select('*, employees!delegate_id(name, role)')
+      .single();
+    if (error) throw error;
+
+    createNotification(req.employee.company_id, delegateId,
+      `🔑 Sizə ${startDate} — ${endDate} tarixləri üçün "${departmentName}" sorğularını təsdiqləmə səlahiyyəti verildi.`, null);
+
+    res.json({ success: true, delegation: data });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/delegations/:companyId', requireAuth, async (req, res) => {
+  try {
+    if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin görə bilər' });
+    const { data, error } = await supabase
+      .from('approval_delegations')
+      .select('*, employees!delegate_id(name, role)')
+      .eq('company_id', req.params.companyId)
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/delegations/:id', requireAuth, async (req, res) => {
+  try {
+    if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin silə bilər' });
+    const { error } = await supabase.from('approval_delegations').delete().eq('id', req.params.id);
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/analytics/:companyId', requireAuth, async (req, res) => {
   try {
     if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin analitikanı görə bilər' });
