@@ -72,7 +72,13 @@ async function createMeetingViaMake(title, startDateTime, endDateTime, descripti
   return { success: data?.success === true, eventLink: data?.eventLink };
 }
 
-// Real bir PDF hesabatı yaradır (sorğular üzrə), Supabase Storage-a yükləyir, açıla bilən link qaytarır
+// PDFKit-in standart şrifti Azərbaycan hərflərini (ə,ş,ç,ğ,ı,ö,ü) dəstəkləmir —
+// bunları oxunaqlı latın hərflərinə çeviririk ki, PDF-də zir-zibil (mojibake) çıxmasın
+function toPdfSafeText(text) {
+  if (!text) return '';
+  const map = { 'ə':'e', 'Ə':'E', 'ş':'sh', 'Ş':'Sh', 'ç':'ch', 'Ç':'Ch', 'ğ':'g', 'Ğ':'G', 'ı':'i', 'İ':'I', 'ö':'o', 'Ö':'O', 'ü':'u', 'Ü':'U' };
+  return text.replace(/[əƏşŞçÇğĞıİöÖüÜ]/g, ch => map[ch] || ch);
+}
 async function generateReportPdf(companyId, reportTitle, filters) {
   return new Promise(async (resolve, reject) => {
     try {
@@ -114,24 +120,24 @@ async function generateReportPdf(companyId, reportTitle, filters) {
 
       // 4) PDF məzmununu yaz
       doc.fontSize(20).text('VUSERA', { align: 'center' });
-      doc.fontSize(14).fillColor('#8B6CFF').text(reportTitle, { align: 'center' });
+      doc.fontSize(14).fillColor('#8B6CFF').text(toPdfSafeText(reportTitle), { align: 'center' });
       doc.moveDown();
-      doc.fontSize(10).fillColor('gray').text(`Yaradılma tarixi: ${new Date().toLocaleDateString('az-AZ')}`, { align: 'center' });
+      doc.fontSize(10).fillColor('gray').text(`Yaradilma tarixi: ${new Date().toLocaleDateString('az-AZ')}`, { align: 'center' });
       doc.moveDown(2);
       doc.fillColor('black');
 
       if (!rows || rows.length === 0) {
-        doc.fontSize(12).text('Bu filtrə uyğun heç bir qeyd tapılmadı.');
+        doc.fontSize(12).text('Bu filtre uygun hec bir qeyd tapilmadi.');
       } else {
         rows.forEach((r, i) => {
-          doc.fontSize(12).fillColor('#4F8CFF').text(`${i + 1}. ${r.title}`);
-          doc.fontSize(10).fillColor('black').text(`   Növ: ${r.type} | Status: ${r.status} | İşçi: ${r.employees?.name || '—'}`);
+          doc.fontSize(12).fillColor('#4F8CFF').text(`${i + 1}. ${toPdfSafeText(r.title)}`);
+          doc.fontSize(10).fillColor('black').text(`   Nov: ${r.type} | Status: ${r.status} | Isci: ${toPdfSafeText(r.employees?.name || '-')}`);
           doc.text(`   Tarix: ${new Date(r.created_at).toLocaleDateString('az-AZ')}`);
-          if (r.detail) doc.text(`   Detal: ${r.detail}`);
+          if (r.detail) doc.text(`   Detal: ${toPdfSafeText(r.detail)}`);
           doc.moveDown(0.5);
         });
         doc.moveDown();
-        doc.fontSize(11).fillColor('#4ADE80').text(`Ümumi qeyd sayı: ${rows.length}`);
+        doc.fontSize(11).fillColor('#4ADE80').text(`Umumi qeyd sayi: ${rows.length}`);
       }
 
       doc.end();
