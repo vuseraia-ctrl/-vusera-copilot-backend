@@ -1275,7 +1275,23 @@ app.get('/pending-actions/:companyId', requireAuth, async (req, res) => {
       });
     }
 
-    res.json(filtered);
+    // Hər sorğu üçün: neçə təsdiq alınıb, bu izləyici artıq təsdiqləyibmi
+    const ids = filtered.map(a => a.id);
+    const { data: allApprovals } = ids.length > 0
+      ? await supabase.from('action_approvals').select('action_request_id, approver_id').in('action_request_id', ids)
+      : { data: [] };
+
+    const enriched = filtered.map(a => {
+      const approvalsForThis = (allApprovals || []).filter(ap => ap.action_request_id === a.id);
+      return {
+        ...a,
+        approvalsCount: approvalsForThis.length,
+        requiredApprovals: a.required_approvals || 1,
+        viewerAlreadyApproved: approvalsForThis.some(ap => ap.approver_id === viewer.id)
+      };
+    });
+
+    res.json(enriched);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
