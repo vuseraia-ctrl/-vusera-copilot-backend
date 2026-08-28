@@ -1314,7 +1314,29 @@ app.post('/proactive/check-reminders', async (req, res) => {
       remindersSent++;
     }
 
-    res.json({ success: true, remindersSent });
+    // ---- Görüş xatırlatmaları — bugün olacaq görüşlər üçün səhər xəbərdarlığı ----
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+    const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).toISOString();
+
+    const { data: todaysMeetings } = await supabase
+      .from('meetings')
+      .select('*, employees!employee_id(id, name, company_id)')
+      .eq('status', 'active')
+      .gte('start_datetime', todayStart)
+      .lt('start_datetime', todayEnd);
+
+    let meetingRemindersSent = 0;
+    for (const m of todaysMeetings || []) {
+      const emp = m.employees;
+      if (!emp) continue;
+      const time = new Date(m.start_datetime).toLocaleTimeString('az-AZ', { hour: '2-digit', minute: '2-digit' });
+      await createNotification(emp.company_id, emp.id,
+        `📅 Xatırlatma: bugün saat ${time}-da "${m.title}" görüşünüz var.`, null);
+      meetingRemindersSent++;
+    }
+
+    res.json({ success: true, remindersSent, meetingRemindersSent });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
