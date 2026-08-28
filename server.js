@@ -12,6 +12,7 @@ import rateLimit from 'express-rate-limit';
 import Anthropic from '@anthropic-ai/sdk';
 import pdfParse from 'pdf-parse';
 import mammoth from 'mammoth';
+import PDFDocument from 'pdfkit';
 import { supabase, supabaseAuth, getEmbedding, chunkDocument } from './lib.js';
 
 const app = express();
@@ -69,6 +70,75 @@ async function checkCalendarAvailability(timeMin, timeMax) {
 async function createMeetingViaMake(title, startDateTime, endDateTime, description) {
   const data = await callVuseraRouter('create_meeting', { title, startDateTime, endDateTime, description });
   return { success: data?.success === true, eventLink: data?.eventLink };
+}
+
+// Real bir PDF hesabatı yaradır (sorğular üzrə), Supabase Storage-a yükləyir, açıla bilən link qaytarır
+async function generateReportPdf(companyId, reportTitle, filters) {
+  return new Promise(async (resolve, reject) => {
+    try {
+      // 1) Məlumatı verilənlər bazasından çək
+      let query = supabase
+        .from('action_requests')
+        .select('*, employees!employee_id(name, role)')
+        .eq('company_id', companyId)
+        .order('created_at', { ascending: false });
+
+      if (filters.type) query = query.eq('type', filters.type);
+      if (filters.status) query = query.eq('status', filters.status);
+      if (filters.sinceDays) {
+        const since = new Date(Date.now() - filters.sinceDays * 24 * 60 * 60 * 1000).toISOString();
+        query = query.gte('created_at', since);
+      }
+
+      const { data: rows, error } = await query;
+      if (error) throw error;
+
+      // 2) PDF-i "yaddaşda" (memory-də) qur
+      const doc = new PDFDocument({ margin: 50 });
+      const chunks = [];
+      doc.on('data', c => chunks.push(c));
+      doc.on('end', async () => {
+        const pdfBuffer = Buffer.concat(chunks);
+
+        // 3) Supabase Storage-a yüklə
+        const fileName = `${companyId}/reports/${Date.now()}-report.pdf`;
+        const { error: uploadError } = await supabase.storage
+          .from('documents')
+          .upload(fileName, pdfBuffer, { contentType: 'application/pdf' });
+
+        if (uploadError) return resolve({ success: false, error: uploadError.message });
+
+        const { data: urlData } = supabase.storage.from('documents').getPublicUrl(fileName);
+        resolve({ success: true, url: urlData?.publicUrl, rowCount: rows.length });
+      });
+
+      // 4) PDF məzmununu yaz
+      doc.fontSize(20).text('VUSERA', { align: 'center' });
+      doc.fontSize(14).fillColor('#8B6CFF').text(reportTitle, { align: 'center' });
+      doc.moveDown();
+      doc.fontSize(10).fillColor('gray').text(`Yaradılma tarixi: ${new Date().toLocaleDateString('az-AZ')}`, { align: 'center' });
+      doc.moveDown(2);
+      doc.fillColor('black');
+
+      if (!rows || rows.length === 0) {
+        doc.fontSize(12).text('Bu filtrə uyğun heç bir qeyd tapılmadı.');
+      } else {
+        rows.forEach((r, i) => {
+          doc.fontSize(12).fillColor('#4F8CFF').text(`${i + 1}. ${r.title}`);
+          doc.fontSize(10).fillColor('black').text(`   Növ: ${r.type} | Status: ${r.status} | İşçi: ${r.employees?.name || '—'}`);
+          doc.text(`   Tarix: ${new Date(r.created_at).toLocaleDateString('az-AZ')}`);
+          if (r.detail) doc.text(`   Detal: ${r.detail}`);
+          doc.moveDown(0.5);
+        });
+        doc.moveDown();
+        doc.fontSize(11).fillColor('#4ADE80').text(`Ümumi qeyd sayı: ${rows.length}`);
+      }
+
+      doc.end();
+    } catch (err) {
+      reject(err);
+    }
+  });
 }
 
 // Sualın email haqqında olub-olmadığını sadəcə açar sözlərlə yoxlayır
@@ -346,6 +416,7 @@ QAYDALAR:
    VACİB: "to" sahəsi YALNIZ yuxarıdakı "ŞİRKƏT İŞÇİ DİREKTORİYASI"ndakı real email ünvanlarından biri ola bilər. Direktoriyada yoxdursa, ünvan uydurma — "Bu şəxsin email ünvanı sistemdə tapılmadı" de.
    ƏLAVƏ (Görüş): Əgər istifadəçi görüş/meeting yaratmaq istəyirsə ("sabah 3-də görüş qur" kimi), 2-addımlı prosesə tabedir: ADDIM 1-də tarix/saat/başlığı göstər, təsdiq soruş; ADDIM 2-də: ACTION:{"type":"create_meeting","title":"...","startDateTime":"YYYY-MM-DDTHH:mm:00+04:00","endDateTime":"YYYY-MM-DDTHH:mm:00+04:00","description":"..."}
    (Vaxt zonası həmişə +04:00 (Bakı) olsun, bitmə vaxtı göstərilməzsə başlanğıcdan 30 dəqiqə sonra qəbul et)
+   ƏLAVƏ (Hesabat): Əgər istifadəçi hesabat/report istəyirsə ("bu ayın IT ticketlərinin hesabatını hazırla" kimi), 2-addımlı prosesə tabedir: ADDIM 1-də nəyi əhatə edəcəyini (növ, status, müddət) göstər, təsdiq soruş; ADDIM 2-də: ACTION:{"type":"generate_report","title":"Hesabat başlığı","reportType":"leave_request|it_ticket|expense_request və ya boş (hamısı)","reportStatus":"pending|approved|rejected və ya boş (hamısı)","sinceDays":30}
 4. Adi cavab üçün sonunda: SOURCE: Sənəd adı — Section X.X
 5. Qısa, 2-4 cümlə.
 6. Əgər yuxarıda "SON EMAİLLƏR" bölməsi verilibsə, istifadəçi bunları xülasə etməyi istəyirsə, hər emaili 1 sətirdə (kimdən, mövzu) yığcam göstər.`;
@@ -399,6 +470,21 @@ QAYDALAR:
               title: meetingResult.success ? actionData.title : 'Görüş yaradılmadı',
               detail: actionData.startDateTime || '',
               status: meetingResult.success ? 'created' : 'failed'
+            };
+          } else if (actionData.type === 'generate_report') {
+            // Hesabat yaratma - real PDF yaradılır, faylların "documents" bucket-inə yüklənir
+            const reportResult = await generateReportPdf(employee.company_id, actionData.title, {
+              type: actionData.reportType || null,
+              status: actionData.reportStatus || null,
+              sinceDays: actionData.sinceDays || 30
+            });
+            createdAction = {
+              id: 'report-' + Date.now(),
+              type: 'generate_report',
+              title: reportResult.success ? actionData.title : 'Hesabat yaradılmadı',
+              detail: reportResult.success ? `${reportResult.rowCount} qeyd daxildir` : (reportResult.error || ''),
+              status: reportResult.success ? 'created' : 'failed',
+              fileUrl: reportResult.url || null
             };
           } else {
           // Real əməliyyat sorğusunu verilənlər bazasına yaz (status: pending, manager təsdiqini gözləyir)
