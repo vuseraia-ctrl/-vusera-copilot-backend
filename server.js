@@ -280,6 +280,17 @@ app.post('/ask', askLimiter, requireAuth, async (req, res) => {
         : '(inbox oxunmadı və ya boşdur)';
     }
 
+    // 3.8) Şirkət işçilərinin real email siyahısı (Claude email ünvanı UYDURMASIN deyə)
+    const { data: companyDirectory } = await supabase
+      .from('employees')
+      .select('name, email, role')
+      .eq('company_id', employee.company_id)
+      .eq('status', 'active');
+    const directoryText = (companyDirectory || [])
+      .filter(e => e.email)
+      .map(e => `- ${e.name} (${e.role}): ${e.email}`)
+      .join('\n');
+
     // 4) İcazə süzgəcindən keçir — işçinin görə bilmədiyi sənədləri çıxar
     const allowedChunks = filterByPermission(matches || [], employee.role);
 
@@ -308,6 +319,9 @@ ${existingLeavesText}
 
 ${emailsText ? `SON EMAİLLƏR (Gmail-dən indi oxunub):\n${emailsText}\n` : ''}
 
+ŞİRKƏT İŞÇİ DİREKTORİYASI (real email ünvanları — email göndərəndə YALNIZ buradakı ünvanlardan istifadə et, HEÇ VAXT ünvan uydurma):
+${directoryText || '(direktoriya boşdur)'}
+
 QAYDALAR:
 1. Yalnız yuxarıdakı parçalara əsaslan, uydurma.
 2. Əgər kontekst boşdursa və ya sual bununla əlaqəli deyilsə, "Bu məlumat mövcud bilik bazasında tapılmadı" de.
@@ -321,6 +335,7 @@ QAYDALAR:
    - it_ticket üçün category: "hardware" | "software" | "access" | "network"; priority: problemi ciddiliyinə görə seç (mes: "işləmir" = high, "yavaşdır" = normal); start_date/end_date lazım deyil, boş buraxa bilərsən
    - expense_request üçün category: "travel" | "meals" | "office" | "other"; start_date/end_date lazım deyil
    ƏLAVƏ: Əgər istifadəçi email GÖNDƏRMƏK istəyirsə (kiməsə yazmaq, cavab yazmaq), bu da eyni 2-addımlı prosesə tabedir: ADDIM 1-də draft-ı göstər (kimə, mövzu, mətn) və təsdiq soruş; ADDIM 2-də (təsdiqdən sonra) bunu yaz: ACTION:{"type":"send_email","to":"email@ünvanı","subject":"...","title":"Email göndərildi","detail":"..."}
+   VACİB: "to" sahəsi YALNIZ yuxarıdakı "ŞİRKƏT İŞÇİ DİREKTORİYASI"ndakı real email ünvanlarından biri ola bilər. Əgər istədiyi şəxs direktoriyada yoxdursa, HEÇ VAXT ünvan uydurma — "Bu şəxsin email ünvanı sistemdə tapılmadı" de.
 4. Adi cavab üçün sonunda: SOURCE: Sənəd adı — Section X.X
 5. Qısa, 2-4 cümlə.
 6. Əgər yuxarıda "SON EMAİLLƏR" bölməsi verilibsə, istifadəçi bunları xülasə etməyi istəyirsə, hər emaili 1 sətirdə (kimdən, mövzu) yığcam göstər.`;
