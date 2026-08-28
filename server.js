@@ -68,7 +68,20 @@ async function checkCalendarAvailability(timeMin, timeMax) {
 }
 
 async function createMeetingViaMake(title, startDateTime, endDateTime, description) {
-  const data = await callVuseraRouter('create_meeting', { title, startDateTime, endDateTime, description });
+  // "end" tarixi Google Calendar modulunda qəribə bir xəta verdiyi üçün, bunun əvəzinə
+  // müddəti (HH:mm formatında) hesablayıb göndəririk — bu, daha etibarlı işləyir.
+  let duration = '00:30';
+  try {
+    const diffMs = new Date(endDateTime) - new Date(startDateTime);
+    if (diffMs > 0) {
+      const totalMinutes = Math.round(diffMs / 60000);
+      const h = Math.floor(totalMinutes / 60);
+      const m = totalMinutes % 60;
+      duration = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+    }
+  } catch (e) { /* default 00:30 qalır */ }
+
+  const data = await callVuseraRouter('create_meeting', { title, startDateTime, duration, description });
   return { success: data?.success === true, eventLink: data?.eventLink, eventId: data?.eventId };
 }
 
