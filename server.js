@@ -485,6 +485,7 @@ QAYDALAR:
           const actionData = JSON.parse(actionMatch[1]);
           answerText = answerText.replace(/ACTION:\s*\{.*?\}/s, '').trim();
           sourceType = 'action';
+          if (!answerText) answerText = 'Sorğunuz emal edilir...'; // Claude yalnız ACTION yazıbsa, boş qalmasın
 
           if (actionData.type === 'send_email') {
             // Email göndərmə - approval axınına yox, birbaşa Make.com-a gedir
