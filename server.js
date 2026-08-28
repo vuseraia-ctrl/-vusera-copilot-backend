@@ -69,7 +69,12 @@ async function checkCalendarAvailability(timeMin, timeMax) {
 
 async function createMeetingViaMake(title, startDateTime, endDateTime, description) {
   const data = await callVuseraRouter('create_meeting', { title, startDateTime, endDateTime, description });
-  return { success: data?.success === true, eventLink: data?.eventLink };
+  return { success: data?.success === true, eventLink: data?.eventLink, eventId: data?.eventId };
+}
+
+async function cancelMeetingViaMake(eventId) {
+  const data = await callVuseraRouter('cancel_meeting', { eventId });
+  return { success: data?.success === true };
 }
 
 // PDFKit-in standart şrifti Azərbaycan hərflərini (ə,ş,ç,ğ,ı,ö,ü) dəstəkləmir —
@@ -422,6 +427,7 @@ QAYDALAR:
    VACİB: "to" sahəsi YALNIZ yuxarıdakı "ŞİRKƏT İŞÇİ DİREKTORİYASI"ndakı real email ünvanlarından biri ola bilər. Direktoriyada yoxdursa, ünvan uydurma — "Bu şəxsin email ünvanı sistemdə tapılmadı" de.
    ƏLAVƏ (Görüş): Əgər istifadəçi görüş/meeting yaratmaq istəyirsə ("sabah 3-də görüş qur" kimi), 2-addımlı prosesə tabedir: ADDIM 1-də tarix/saat/başlığı göstər, təsdiq soruş; ADDIM 2-də: ACTION:{"type":"create_meeting","title":"...","startDateTime":"YYYY-MM-DDTHH:mm:00+04:00","endDateTime":"YYYY-MM-DDTHH:mm:00+04:00","description":"..."}
    (Vaxt zonası həmişə +04:00 (Bakı) olsun, bitmə vaxtı göstərilməzsə başlanğıcdan 30 dəqiqə sonra qəbul et)
+   ƏLAVƏ (Görüşü ləğv etmə): Əgər istifadəçi bir görüşü ləğv etmək istəyirsə, 2-addımlı prosesə tabedir: ADDIM 1-də hansı görüşü ləğv edəcəyini aydınlaşdır, təsdiq soruş; ADDIM 2-də: ACTION:{"type":"cancel_meeting","titleMatch":"görüşün başlığından açar söz","title":"Ləğv edildi","detail":"..."}
    ƏLAVƏ (Hesabat): Əgər istifadəçi hesabat/report istəyirsə ("bu ayın IT ticketlərinin hesabatını hazırla" kimi), 2-addımlı prosesə tabedir: ADDIM 1-də nəyi əhatə edəcəyini (növ, status, müddət) göstər, təsdiq soruş; ADDIM 2-də: ACTION:{"type":"generate_report","title":"Hesabat başlığı","reportType":"leave_request|it_ticket|expense_request və ya boş (hamısı)","reportStatus":"pending|approved|rejected və ya boş (hamısı)","sinceDays":30}
 4. Adi cavab üçün sonunda: SOURCE: Sənəd adı — Section X.X
 5. Qısa, 2-4 cümlə.
@@ -470,6 +476,16 @@ QAYDALAR:
           } else if (actionData.type === 'create_meeting') {
             // Görüş yaratma - approval axınına yox, birbaşa Google Calendar-a gedir
             const meetingResult = await createMeetingViaMake(actionData.title, actionData.startDateTime, actionData.endDateTime, actionData.description || '');
+            if (meetingResult.success) {
+              await supabase.from('meetings').insert({
+                company_id: employee.company_id,
+                employee_id: employee.id,
+                title: actionData.title,
+                start_datetime: actionData.startDateTime,
+                end_datetime: actionData.endDateTime,
+                calendar_event_id: meetingResult.eventId
+              });
+            }
             createdAction = {
               id: 'meeting-' + Date.now(),
               type: 'create_meeting',
@@ -477,6 +493,39 @@ QAYDALAR:
               detail: actionData.startDateTime || '',
               status: meetingResult.success ? 'created' : 'failed'
             };
+          } else if (actionData.type === 'cancel_meeting') {
+            // Görüşü ləğv etmə - başlıq/tarixə uyğun aktiv görüşü tapıb Calendar-dan silir
+            const { data: matchingMeeting } = await supabase
+              .from('meetings')
+              .select('*')
+              .eq('employee_id', employee.id)
+              .eq('status', 'active')
+              .ilike('title', `%${actionData.titleMatch || ''}%`)
+              .order('created_at', { ascending: false })
+              .limit(1)
+              .maybeSingle();
+
+            if (matchingMeeting && matchingMeeting.calendar_event_id) {
+              const cancelResult = await cancelMeetingViaMake(matchingMeeting.calendar_event_id);
+              if (cancelResult.success) {
+                await supabase.from('meetings').update({ status: 'cancelled' }).eq('id', matchingMeeting.id);
+              }
+              createdAction = {
+                id: 'cancel-' + Date.now(),
+                type: 'cancel_meeting',
+                title: cancelResult.success ? `Ləğv edildi: ${matchingMeeting.title}` : 'Ləğv edilmədi',
+                detail: matchingMeeting.title,
+                status: cancelResult.success ? 'cancelled' : 'failed'
+              };
+            } else {
+              createdAction = {
+                id: 'cancel-' + Date.now(),
+                type: 'cancel_meeting',
+                title: 'Görüş tapılmadı',
+                detail: 'Uyğun aktiv görüş tapılmadı',
+                status: 'failed'
+              };
+            }
           } else if (actionData.type === 'generate_report') {
             // Hesabat yaratma - real PDF yaradılır, faylların "documents" bucket-inə yüklənir
             const reportResult = await generateReportPdf(employee.company_id, actionData.title, {
