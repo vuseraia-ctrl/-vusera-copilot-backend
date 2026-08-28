@@ -81,7 +81,14 @@ async function createMeetingViaMake(title, startDateTime, endDateTime, descripti
     }
   } catch (e) { /* default 00:30 qalır */ }
 
-  const data = await callVuseraRouter('create_meeting', { title, startDateTime, duration, description });
+  // "+04:00" formatındakı "+" işarəsi webhook ötürülməsində korlana bildiyi üçün,
+  // tarixi UTC-yə çeviririk (sonu "Z" ilə bitən format, "+" işarəsi olmadan)
+  let safeStartDateTime = startDateTime;
+  try {
+    safeStartDateTime = new Date(startDateTime).toISOString();
+  } catch (e) { /* orijinal dəyər qalır */ }
+
+  const data = await callVuseraRouter('create_meeting', { title, startDateTime: safeStartDateTime, duration, description });
   return { success: data?.success === true, eventLink: data?.eventLink, eventId: data?.eventId };
 }
 
