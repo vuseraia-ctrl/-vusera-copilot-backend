@@ -16,6 +16,7 @@ import PDFDocument from 'pdfkit';
 import { supabase, supabaseAuth, getEmbedding, chunkDocument } from './lib.js';
 
 const app = express();
+app.set('trust proxy', 1); // Render bir proksi arxasında işlədiyi üçün, real IP-ni düzgün tanımaq üçün lazımdır
 app.use(cors());
 app.use(express.json({ limit: '10mb' })); // qəbz/PDF şəkilləri üçün böyük body limiti
 
