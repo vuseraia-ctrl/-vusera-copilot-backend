@@ -17,7 +17,7 @@ import { supabase, supabaseAuth, getEmbedding, chunkDocument } from './lib.js';
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' })); // qəbz/PDF şəkilləri üçün böyük body limiti
 
 // JSON formatı səhv olan sorğular üçün aydın xəta
 app.use((err, req, res, next) => {
