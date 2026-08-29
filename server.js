@@ -14,6 +14,51 @@ import Anthropic from '@anthropic-ai/sdk';
 import pdfParse from 'pdf-parse';
 import mammoth from 'mammoth';
 import PDFDocument from 'pdfkit';
+import { google } from 'googleapis';
+
+// ---- Birbaşa Google Calendar API (Make.com-u keçərək — "createAnEvent" bug-unu aradan qaldırmaq üçün) ----
+function getGoogleCalendarClient() {
+  const oauth2Client = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET
+  );
+  oauth2Client.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN });
+  return google.calendar({ version: 'v3', auth: oauth2Client });
+}
+
+// Görüş yaradır — birbaşa Google Calendar API ilə (Make.com-suz)
+async function createMeetingDirectGoogle(title, startDateTime, endDateTime, description) {
+  if (!process.env.GOOGLE_CLIENT_ID) return { success: false, error: 'Google Calendar birbaşa inteqrasiyası qurulmayıb' };
+  try {
+    const calendar = getGoogleCalendarClient();
+    const response = await calendar.events.insert({
+      calendarId: 'primary',
+      requestBody: {
+        summary: title,
+        description: description || '',
+        start: { dateTime: startDateTime },
+        end: { dateTime: endDateTime }
+      }
+    });
+    return { success: true, eventId: response.data.id, eventLink: response.data.htmlLink };
+  } catch (e) {
+    console.error('Google Calendar (birbaşa) xətası:', e.message);
+    return { success: false, error: e.message };
+  }
+}
+
+// Görüşü ləğv edir — birbaşa Google Calendar API ilə
+async function cancelMeetingDirectGoogle(eventId) {
+  if (!process.env.GOOGLE_CLIENT_ID) return { success: false };
+  try {
+    const calendar = getGoogleCalendarClient();
+    await calendar.events.delete({ calendarId: 'primary', eventId });
+    return { success: true };
+  } catch (e) {
+    console.error('Google Calendar (birbaşa) ləğv xətası:', e.message);
+    return { success: false, error: e.message };
+  }
+}
 import { supabase, supabaseAuth, getEmbedding, chunkDocument } from './lib.js';
 
 const app = express();
@@ -535,7 +580,7 @@ QAYDALAR:
             };
           } else if (actionData.type === 'create_meeting') {
             // Görüş yaratma - approval axınına yox, birbaşa Google Calendar-a gedir
-            const meetingResult = await createMeetingViaMake(actionData.title, actionData.startDateTime, actionData.endDateTime, actionData.description || '');
+            const meetingResult = await createMeetingDirectGoogle(actionData.title, actionData.startDateTime, actionData.endDateTime, actionData.description || '');
             if (meetingResult.success) {
               await supabase.from('meetings').insert({
                 company_id: employee.company_id,
@@ -566,7 +611,7 @@ QAYDALAR:
               .maybeSingle();
 
             if (matchingMeeting && matchingMeeting.calendar_event_id) {
-              const cancelResult = await cancelMeetingViaMake(matchingMeeting.calendar_event_id);
+              const cancelResult = await cancelMeetingDirectGoogle(matchingMeeting.calendar_event_id);
               if (cancelResult.success) {
                 await supabase.from('meetings').update({ status: 'cancelled' }).eq('id', matchingMeeting.id);
               }
@@ -600,11 +645,11 @@ QAYDALAR:
 
             if (matchingMeeting && matchingMeeting.calendar_event_id) {
               // 1) Köhnə hadisəni sil
-              await cancelMeetingViaMake(matchingMeeting.calendar_event_id);
+              await cancelMeetingDirectGoogle(matchingMeeting.calendar_event_id);
               await supabase.from('meetings').update({ status: 'cancelled' }).eq('id', matchingMeeting.id);
 
               // 2) Yeni vaxtda yenisini yarat
-              const meetingResult = await createMeetingViaMake(matchingMeeting.title, actionData.newStartDateTime, actionData.newEndDateTime, matchingMeeting.title);
+              const meetingResult = await createMeetingDirectGoogle(matchingMeeting.title, actionData.newStartDateTime, actionData.newEndDateTime, matchingMeeting.title);
               if (meetingResult.success) {
                 await supabase.from('meetings').insert({
                   company_id: employee.company_id,
@@ -1051,7 +1096,7 @@ app.delete('/employees/:id', requireAuth, async (req, res) => {
       .eq('status', 'active');
     for (const m of (activeMeetings || [])) {
       if (m.calendar_event_id) {
-        const cancelResult = await cancelMeetingViaMake(m.calendar_event_id);
+        const cancelResult = await cancelMeetingDirectGoogle(m.calendar_event_id);
         if (cancelResult.success) {
           await supabase.from('meetings').update({ status: 'cancelled' }).eq('id', m.id);
         }
