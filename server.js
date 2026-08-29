@@ -98,6 +98,11 @@ async function cancelMeetingViaMake(eventId) {
   return { success: data?.success === true };
 }
 
+async function exportToSheetsViaMake(title, rows) {
+  const data = await callVuseraRouter('export_sheets', { title, rows });
+  return { success: data?.success === true, spreadsheetUrl: data?.spreadsheetUrl };
+}
+
 // PDFKit-in standart şrifti Azərbaycan hərflərini (ə,ş,ç,ğ,ı,ö,ü) dəstəkləmir —
 // bunları oxunaqlı latın hərflərinə çeviririk ki, PDF-də zir-zibil (mojibake) çıxmasın
 function toPdfSafeText(text) {
@@ -452,7 +457,8 @@ QAYDALAR:
    (Vaxt zonası həmişə +04:00 (Bakı) olsun, bitmə vaxtı göstərilməzsə başlanğıcdan 30 dəqiqə sonra qəbul et)
    ƏLAVƏ (Görüşü ləğv etmə): Əgər istifadəçi bir görüşü ləğv etmək istəyirsə, 2-addımlı prosesə tabedir: ADDIM 1-də hansı görüşü ləğv edəcəyini aydınlaşdır, təsdiq soruş; ADDIM 2-də: ACTION:{"type":"cancel_meeting","titleMatch":"görüşün başlığından açar söz","title":"Ləğv edildi","detail":"..."}
    ƏLAVƏ (Görüşün vaxtını dəyişmə): Əgər istifadəçi bir görüşün vaxtını dəyişmək istəyirsə ("gorüşü sabaha köçür" kimi), 2-addımlı prosesə tabedir: ADDIM 1-də hansı görüş və yeni vaxtı aydınlaşdır, təsdiq soruş; ADDIM 2-də: ACTION:{"type":"reschedule_meeting","titleMatch":"görüşün başlığından açar söz","newStartDateTime":"YYYY-MM-DDTHH:mm:00+04:00","newEndDateTime":"YYYY-MM-DDTHH:mm:00+04:00","title":"Vaxt dəyişdirildi","detail":"..."}
-   ƏLAVƏ (Hesabat): Əgər istifadəçi hesabat/report istəyirsə ("bu ayın IT ticketlərinin hesabatını hazırla" kimi), 2-addımlı prosesə tabedir: ADDIM 1-də nəyi əhatə edəcəyini (növ, status, müddət) göstər, təsdiq soruş; ADDIM 2-də: ACTION:{"type":"generate_report","title":"Hesabat başlığı","reportType":"leave_request|it_ticket|expense_request və ya boş (hamısı)","reportStatus":"pending|approved|rejected və ya boş (hamısı)","sinceDays":30}
+   ƏLAVƏ (Hesabat): Əgər istifadəçi hesabat/report istəyirsə ("bu ayın IT ticketlərinin hesabatını hazırla" kimi), 2-addımlı prosesə tabedir: ADDIM 1-də nəyi əhatə edəcəyini (növ, status, müddət) göstər VƏ format seçimini soruş (PDF, yoxsa Google Sheets); ADDIM 2-də: ACTION:{"type":"generate_report","title":"Hesabat başlığı","reportType":"leave_request|it_ticket|expense_request və ya boş (hamısı)","reportStatus":"pending|approved|rejected və ya boş (hamısı)","sinceDays":30,"format":"pdf|sheets"}
+   (İstifadəçi "excel", "sheets", "cədvəl" desə format="sheets"; "PDF" və ya heç nə deməsə format="pdf")
 4. Adi cavab üçün sonunda: SOURCE: Sənəd adı — Section X.X
 5. Qısa, 2-4 cümlə.
 6. Əgər yuxarıda "SON EMAİLLƏR" bölməsi verilibsə, istifadəçi bunları xülasə etməyi istəyirsə, hər emaili 1 sətirdə (kimdən, mövzu) yığcam göstər.
@@ -599,20 +605,51 @@ QAYDALAR:
               };
             }
           } else if (actionData.type === 'generate_report') {
-            // Hesabat yaratma - real PDF yaradılır, faylların "documents" bucket-inə yüklənir
-            const reportResult = await generateReportPdf(employee.company_id, actionData.title, {
-              type: actionData.reportType || null,
-              status: actionData.reportStatus || null,
-              sinceDays: actionData.sinceDays || 30
-            });
-            createdAction = {
-              id: 'report-' + Date.now(),
-              type: 'generate_report',
-              title: reportResult.success ? actionData.title : 'Hesabat yaradılmadı',
-              detail: reportResult.success ? `${reportResult.rowCount} qeyd daxildir` : (reportResult.error || ''),
-              status: reportResult.success ? 'created' : 'failed',
-              fileUrl: reportResult.url || null
-            };
+            // Hesabat yaratma - format="sheets" olarsa Google Sheets-ə, əks halda PDF-ə yaradılır
+            if (actionData.format === 'sheets') {
+              // Eyni sorğu ilə real məlumatı çək, Sheets formatına (rows) çevir
+              let query = supabase
+                .from('action_requests')
+                .select('*, employees!employee_id(name, role)')
+                .eq('company_id', employee.company_id)
+                .order('created_at', { ascending: false });
+              if (actionData.reportType) query = query.eq('type', actionData.reportType);
+              if (actionData.reportStatus) query = query.eq('status', actionData.reportStatus);
+              if (actionData.sinceDays) {
+                const since = new Date(Date.now() - actionData.sinceDays * 24 * 60 * 60 * 1000).toISOString();
+                query = query.gte('created_at', since);
+              }
+              const { data: sheetRows } = await query;
+
+              const header = { values: ['Başlıq', 'Növ', 'Status', 'İşçi', 'Tarix', 'Detal'] };
+              const dataRows = (sheetRows || []).map(r => ({
+                values: [r.title, r.type, r.status, r.employees?.name || '-', new Date(r.created_at).toLocaleDateString('az-AZ'), r.detail || '']
+              }));
+              const sheetsResult = await exportToSheetsViaMake(actionData.title, [header, ...dataRows]);
+              createdAction = {
+                id: 'sheets-' + Date.now(),
+                type: 'generate_report',
+                title: sheetsResult.success ? actionData.title : 'Sheets yaradılmadı',
+                detail: sheetsResult.success ? `${dataRows.length} qeyd Google Sheets-ə ixrac edildi` : '',
+                status: sheetsResult.success ? 'created' : 'failed',
+                fileUrl: sheetsResult.spreadsheetUrl || null
+              };
+            } else {
+              // Real PDF yaradılır, "documents" bucket-inə yüklənir
+              const reportResult = await generateReportPdf(employee.company_id, actionData.title, {
+                type: actionData.reportType || null,
+                status: actionData.reportStatus || null,
+                sinceDays: actionData.sinceDays || 30
+              });
+              createdAction = {
+                id: 'report-' + Date.now(),
+                type: 'generate_report',
+                title: reportResult.success ? actionData.title : 'Hesabat yaradılmadı',
+                detail: reportResult.success ? `${reportResult.rowCount} qeyd daxildir` : (reportResult.error || ''),
+                status: reportResult.success ? 'created' : 'failed',
+                fileUrl: reportResult.url || null
+              };
+            }
           } else {
           // Real əməliyyat sorğusunu verilənlər bazasına yaz (status: pending, manager təsdiqini gözləyir)
           // 2000 AZN-dən yuxarı xərc sorğuları — Expense Policy-yə əsasən 2 təsdiq (Manager + Finance) tələb edir
