@@ -458,10 +458,12 @@ QAYDALAR:
 2.5. Əgər istifadəçi bir sənədin ("bu sənədi", "X sənədini") "xülasə et", "qısaca izah et", "summary" istəyirsə, yuxarıdakı bütün müvafiq parçaları birləşdirib, sənədin ƏSAS MƏZMUNUNU 3-5 cümləyə yığcamlaşdır (bütün əsas bölmələrə toxun, detala getmə).
 3. ƏMƏLİYYAT (məzuniyyət/xərc/IT problemi) İKİ ADDIMLI PROSESDİR:
    ADDIM 1 (Təklif): İstifadəçi ilk dəfə bir iş görülməsini istəyəndə, lazımi məlumatı (tarix, məbləğ, problem) topla, XÜLASƏ ET və aydın şəkildə TƏSDİQ SORUŞ (məs: "Bunu təsdiqləyirsinizmi?"). Bu addımda HEÇ VAXT ACTION yazma.
+   ÖZƏL QAYDA (IT Troubleshooting): Əgər tip it_ticket-dirsə VƏ yuxarıdakı sənəd parçalarında (IT Security Policy və s.) bu problemlə bağlı BASİT, özün-et həll addımları varsa (məs: "şəbəkəyə qoşula bilmirəm" → "router-i yenidən başlat" kimi bir addım sənəddə yazılıbsa), ƏVVƏLCƏ bu addımı təklif et və "Bunu sınadınızmı, kömək etdimi?" deyə soruş — ticket-i DƏRHAL təklif ETMƏ. Yalnız istifadəçi "sınadım, kömək etmədi" desə, ADDIM 1-ə (ticket təklifinə) keç.
    ƏGƏR TİP leave_request-dirsə: aşağıdakı "MÖVCUD MƏZUNİYYƏT SORĞULARI" siyahısı VƏ "GOOGLE CALENDAR-DA MƏŞĞUL VAXTLAR" ilə TARİX ÜST-ÜSTƏ DÜŞMƏSİNİ yoxla, üst-üstə düşmə varsa bunu AÇIQ şəkildə xəbərdarlıq et (təsdiq soruşarkən).
    ADDIM 2 (Təsdiq): Yalnız əgər söhbətin ƏVVƏLKİ sənin mesajında artıq təklif irəli sürmüsənsə VƏ istifadəçi indi "bəli/hə/təsdiqləyirəm/et" kimi razılıq bildirirsə, cavabının sonunda bunu yaz: ACTION:{"type":"leave_request|it_ticket|expense_request","title":"...","detail":"...","priority":"low|normal|high","category":"...","start_date":"YYYY-MM-DD","end_date":"YYYY-MM-DD","amount":rəqəm_ve_ya_null}
    İstifadəçi "yox" desə və ya fikrini dəyişsə, ACTION yazma, "Ləğv edildi" de.
    VACİB: ACTION marker-i yazırsansa, o, cavabının MÜTLƏQ SON HİSSƏSİ olmalıdır — ondan sonra HEÇ BİR söz, HEÇ BİR salamlama, HEÇ BİR emoji yazma.
+   ÇOX-ADDIMLI TAPŞIRIQ DƏSTƏYİ: Əgər istifadəçi tapşırıqla YANAŞI, kiməsə bu barədə email ilə xəbər verilməsini də istəyirsə (məs: "IT ticket yarat VƏ Michael-ə də bildir"), ACTION obyektinə əlavə "notifyEmail" (real direktoriya email ünvanı) və "notifyNote" (qısa bildiriş mətni) sahələrini əlavə et — sistem əsas əməliyyatdan SONRA avtomatik bu email-i də göndərəcək.
    - leave_request üçün category: "annual" | "sick" | "unpaid" | "emergency"; start_date/end_date MÜTLƏQ doldurulmalıdır (il göstərilməsə, ${new Date().getFullYear()} il qəbul et)
    - it_ticket üçün category: "hardware" | "software" | "access" | "network"; priority: problemi ciddiliyinə görə seç (mes: "işləmir" = high, "yavaşdır" = normal); start_date/end_date lazım deyil, boş buraxa bilərsən
    - expense_request üçün category: "travel" | "meals" | "office" | "other"; start_date/end_date lazım deyil; "amount" sahəsinə MÜTLƏQ rəqəm (yalnız ədəd, valyuta olmadan) yaz, məs: 2500
@@ -737,6 +739,20 @@ QAYDALAR:
             }
           }
           } // send_email deyilsə bloku bağlanır
+
+          // ÇOX-ADDIMLI TAPŞIRIQ: əsas əməliyyatdan sonra, istəyə bağlı əlavə email addımı
+          if (actionData.notifyEmail && createdAction && createdAction.status !== 'failed') {
+            const { data: notifyMatch } = await supabase
+              .from('employees')
+              .select('id')
+              .eq('company_id', employee.company_id)
+              .eq('email', actionData.notifyEmail)
+              .maybeSingle();
+            if (notifyMatch) {
+              await sendEmailViaMake(actionData.notifyEmail, `Yeni bildiriş: ${createdAction.title}`, actionData.notifyNote || createdAction.detail || '');
+              createdAction.detail = (createdAction.detail || '') + ` · ${actionData.notifyEmail}-ə də bildirildi`;
+            }
+          }
         } catch (e) {
           console.error('Action parse xətası:', e.message);
         }
@@ -827,19 +843,25 @@ app.post('/receipts/extract', requireAuth, async (req, res) => {
 
     const message = await anthropic.messages.create({
       model: 'claude-sonnet-4-6',
-      max_tokens: 500,
+      max_tokens: 700,
       messages: [{
         role: 'user',
         content: [
           { type: contentBlockType, source: { type: 'base64', media_type: mediaType, data: fileBase64 } },
-          { type: 'text', text: 'Bu, bir qəbz və ya fakturadır. Aşağıdakı JSON formatında, YALNIZ JSON qaytar (başqa mətn yazma): {"vendor":"satıcı adı","amount":rəqəm,"currency":"AZN/USD/EUR","date":"YYYY-MM-DD","category":"travel|meals|office|other","description":"qısa təsvir"}. Əgər bir sahəni tapa bilmirsənsə, null yaz.' }
+          { type: 'text', text: `Bu sənəd ya sadə bir QƏBZ (kassa çeki), ya da rəsmi bir FAKTURA (invoice)-dur. Əvvəlcə hansı olduğunu müəyyən et, sonra uyğun JSON formatında, YALNIZ JSON qaytar (başqa mətn yazma):
+
+Əgər sadə QƏBZ-dirsə: {"documentType":"receipt","vendor":"satıcı adı","amount":rəqəm,"currency":"AZN/USD/EUR","date":"YYYY-MM-DD","category":"travel|meals|office|other","description":"qısa təsvir"}
+
+Əgər rəsmi FAKTURA-dırsa (invoice number, VÖEN/tax ID, line items olan): {"documentType":"invoice","vendor":"satıcı şirkət adı","vendorTaxId":"VÖEN/tax ID və ya null","invoiceNumber":"faktura nömrəsi","invoiceDate":"YYYY-MM-DD","dueDate":"YYYY-MM-DD və ya null","amount":ümumi_meblegh_reqem,"currency":"AZN/USD/EUR","lineItems":[{"description":"xidmet/mehsul adı","quantity":reqem,"unitPrice":reqem,"total":reqem}],"category":"travel|meals|office|other"}
+
+Əgər bir sahəni tapa bilmirsənsə, null yaz.` }
         ]
       }]
     });
 
     const rawText = message.content.map(b => b.text || '').join('');
     const jsonMatch = rawText.match(/\{.*\}/s);
-    if (!jsonMatch) return res.status(422).json({ error: 'Qəbzdən məlumat çıxarıla bilmədi' });
+    if (!jsonMatch) return res.status(422).json({ error: 'Sənəddən məlumat çıxarıla bilmədi' });
 
     const extracted = JSON.parse(jsonMatch[0]);
     res.json({ success: true, extracted });
