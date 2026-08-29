@@ -454,7 +454,9 @@ QAYDALAR:
    ƏLAVƏ (Hesabat): Əgər istifadəçi hesabat/report istəyirsə ("bu ayın IT ticketlərinin hesabatını hazırla" kimi), 2-addımlı prosesə tabedir: ADDIM 1-də nəyi əhatə edəcəyini (növ, status, müddət) göstər, təsdiq soruş; ADDIM 2-də: ACTION:{"type":"generate_report","title":"Hesabat başlığı","reportType":"leave_request|it_ticket|expense_request və ya boş (hamısı)","reportStatus":"pending|approved|rejected və ya boş (hamısı)","sinceDays":30}
 4. Adi cavab üçün sonunda: SOURCE: Sənəd adı — Section X.X
 5. Qısa, 2-4 cümlə.
-6. Əgər yuxarıda "SON EMAİLLƏR" bölməsi verilibsə, istifadəçi bunları xülasə etməyi istəyirsə, hər emaili 1 sətirdə (kimdən, mövzu) yığcam göstər.`;
+6. Əgər yuxarıda "SON EMAİLLƏR" bölməsi verilibsə, istifadəçi bunları xülasə etməyi istəyirsə, hər emaili 1 sətirdə (kimdən, mövzu) yığcam göstər.
+7. Əgər sən REJİM A (adi sual-cavab) ilə cavab verirsənsə VƏ cavabından məntiqli, təbii bir davam əməliyyatı çıxırsa (məs: "Məzuniyyət qaydası" sualından sonra — "istəyirsiniz məzuniyyət sorğusu yaradım?"; "IT Security Policy" sualından sonra — "IT problemi bildirmək istəyirsiniz?"), cavabının SONUNDA (SOURCE-dan da sonra) yeni sətirdə bunu əlavə et: SUGGESTION: qısa təklif mətni (məs: "Məzuniyyət sorğusu yaratmağımı istəyirsiniz?")
+   Bunu YALNIZ real, təbii bir davam varsa yaz — hər cavabda məcburi deyil, əksinə əksər sadə faktual suallarda heç bir təklif YAZMA.`;
 
     // 6) Claude-dan cavab al (söhbət tarixçəsi ilə birlikdə)
     let message;
@@ -637,6 +639,14 @@ QAYDALAR:
       }
     }
 
+    // Follow-up təklifini ayır (varsa) — cavab mətnindən çıxarıb, ayrıca sahədə qaytarırıq
+    let suggestion = null;
+    const suggestionMatch = answerText.match(/SUGGESTION:\s*(.+)$/m);
+    if (suggestionMatch) {
+      suggestion = suggestionMatch[1].trim();
+      answerText = answerText.replace(/SUGGESTION:\s*.+$/m, '').trim();
+    }
+
     // 7) Söhbəti logla (analitika/dashboard üçün)
     await supabase.from('chat_logs').insert({
       company_id: employee.company_id,
@@ -646,7 +656,7 @@ QAYDALAR:
       source_type: sourceType
     });
 
-    res.json({ answer: answerText, employee: employee.name, role: employee.role, action: createdAction });
+    res.json({ answer: answerText, employee: employee.name, role: employee.role, action: createdAction, suggestion });
 
   } catch (err) {
     console.error(err);
