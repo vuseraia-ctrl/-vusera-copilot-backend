@@ -60,6 +60,52 @@ async function cancelMeetingDirectGoogle(eventId) {
   }
 }
 
+// ---- Birbaşa HubSpot CRM API ----
+async function searchHubSpotContact(query) {
+  if (!process.env.HUBSPOT_ACCESS_TOKEN) return { success: false, error: 'HubSpot inteqrasiyası qurulmayıb' };
+  try {
+    const response = await fetch('https://api.hubapi.com/crm/v3/objects/contacts/search', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.HUBSPOT_ACCESS_TOKEN}`
+      },
+      body: JSON.stringify({
+        query,
+        properties: ['firstname', 'lastname', 'email', 'phone', 'company'],
+        limit: 5
+      })
+    });
+    const data = await response.json();
+    if (!response.ok) return { success: false, error: data.message };
+    return { success: true, contacts: (data.results || []).map(r => r.properties) };
+  } catch (e) {
+    console.error('HubSpot axtarış xətası:', e.message);
+    return { success: false, error: e.message };
+  }
+}
+
+async function createHubSpotContact(firstname, lastname, email, phone, company) {
+  if (!process.env.HUBSPOT_ACCESS_TOKEN) return { success: false, error: 'HubSpot inteqrasiyası qurulmayıb' };
+  try {
+    const response = await fetch('https://api.hubapi.com/crm/v3/objects/contacts', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.HUBSPOT_ACCESS_TOKEN}`
+      },
+      body: JSON.stringify({ properties: { firstname, lastname, email, phone, company } })
+    });
+    const data = await response.json();
+    if (!response.ok) return { success: false, error: data.message };
+    return { success: true, contactId: data.id };
+  } catch (e) {
+    console.error('HubSpot yaratma xətası:', e.message);
+    return { success: false, error: e.message };
+  }
+}
+
+
 // ---- Birbaşa Slack API (Make.com-un client_id problemini keçmək üçün) ----
 async function sendSlackMessage(channel, text) {
   if (!process.env.SLACK_BOT_TOKEN) return { success: false, error: 'Slack inteqrasiyası qurulmayıb' };
@@ -567,6 +613,7 @@ QAYDALAR:
    VACİB: ACTION marker-i yazırsansa, o, cavabının MÜTLƏQ SON HİSSƏSİ olmalıdır — ondan sonra HEÇ BİR söz, HEÇ BİR salamlama, HEÇ BİR emoji yazma.
    ÇOX-ADDIMLI TAPŞIRIQ DƏSTƏYİ: Əgər istifadəçi tapşırıqla YANAŞI, kiməsə bu barədə email ilə xəbər verilməsini də istəyirsə (məs: "IT ticket yarat VƏ Michael-ə də bildir"), ACTION obyektinə əlavə "notifyEmail" (real direktoriya email ünvanı) və "notifyNote" (qısa bildiriş mətni) sahələrini əlavə et — sistem əsas əməliyyatdan SONRA avtomatik bu email-i də göndərəcək.
    ƏLAVƏ: Əgər istifadəçi "Slack-ə də yaz/bildir" desə, VACİB: ADDIM 2-də (təsdiqdən sonra), ACTION JSON-un İÇİNƏ MÜTLƏQ "notifySlackChannel" (məs: "#all-vusera") və "notifySlackNote" sahələrini də yaz — bunu unutma, çünki bu, ADDIM 1-də vəd etdiyin bir işdir. Məsələn: ACTION:{"type":"it_ticket",...,"notifySlackChannel":"#all-vusera","notifySlackNote":"Yeni IT ticket: Laptop işləmir"}
+   ƏLAVƏ (CRM): Əgər istifadəçi "CRM-də yeni müştəri yarat", "kontakt əlavə et" kimi bir şey istəyirsə, 2-addımlı prosesə tabedir: ADDIM 1-də ad/soyad/email/telefon/şirkəti aydınlaşdır, təsdiq soruş; ADDIM 2-də: ACTION:{"type":"create_crm_contact","firstname":"...","lastname":"...","email":"...","phone":"... və ya null","company":"... və ya null","title":"CRM Kontakt Yaradıldı","detail":"..."}
    - leave_request üçün category: "annual" | "sick" | "unpaid" | "emergency"; start_date/end_date MÜTLƏQ doldurulmalıdır (il göstərilməsə, ${new Date().getFullYear()} il qəbul et)
    - it_ticket üçün category: "hardware" | "software" | "access" | "network"; priority: problemi ciddiliyinə görə seç (mes: "işləmir" = high, "yavaşdır" = normal); start_date/end_date lazım deyil, boş buraxa bilərsən
    - expense_request üçün category: "travel" | "meals" | "office" | "other"; start_date/end_date lazım deyil; "amount" sahəsinə MÜTLƏQ rəqəm (yalnız ədəd, valyuta olmadan) yaz, məs: 2500
@@ -689,6 +736,16 @@ QAYDALAR:
                 status: 'failed'
               };
             }
+          } else if (actionData.type === 'create_crm_contact') {
+            // CRM Kontakt yaratma - birbaşa HubSpot API-sinə gedir
+            const crmResult = await createHubSpotContact(actionData.firstname, actionData.lastname, actionData.email, actionData.phone, actionData.company);
+            createdAction = {
+              id: 'crm-' + Date.now(),
+              type: 'create_crm_contact',
+              title: crmResult.success ? `CRM Kontakt: ${actionData.firstname} ${actionData.lastname}` : 'CRM Kontakt yaradılmadı',
+              detail: crmResult.success ? (actionData.company || actionData.email || '') : (crmResult.error || ''),
+              status: crmResult.success ? 'created' : 'failed'
+            };
           } else if (actionData.type === 'reschedule_meeting') {
             // Görüşün vaxtını dəyişmə - köhnəni Calendar-dan silib, yenisini yeni vaxtda yaradır
             const { data: matchingMeeting } = await supabase
