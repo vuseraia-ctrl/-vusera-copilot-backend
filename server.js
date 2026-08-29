@@ -451,6 +451,7 @@ QAYDALAR:
    ƏLAVƏ (Görüş): Əgər istifadəçi görüş/meeting yaratmaq istəyirsə ("sabah 3-də görüş qur" kimi), 2-addımlı prosesə tabedir: ADDIM 1-də tarix/saat/başlığı göstər, təsdiq soruş; ADDIM 2-də: ACTION:{"type":"create_meeting","title":"...","startDateTime":"YYYY-MM-DDTHH:mm:00+04:00","endDateTime":"YYYY-MM-DDTHH:mm:00+04:00","description":"..."}
    (Vaxt zonası həmişə +04:00 (Bakı) olsun, bitmə vaxtı göstərilməzsə başlanğıcdan 30 dəqiqə sonra qəbul et)
    ƏLAVƏ (Görüşü ləğv etmə): Əgər istifadəçi bir görüşü ləğv etmək istəyirsə, 2-addımlı prosesə tabedir: ADDIM 1-də hansı görüşü ləğv edəcəyini aydınlaşdır, təsdiq soruş; ADDIM 2-də: ACTION:{"type":"cancel_meeting","titleMatch":"görüşün başlığından açar söz","title":"Ləğv edildi","detail":"..."}
+   ƏLAVƏ (Görüşün vaxtını dəyişmə): Əgər istifadəçi bir görüşün vaxtını dəyişmək istəyirsə ("gorüşü sabaha köçür" kimi), 2-addımlı prosesə tabedir: ADDIM 1-də hansı görüş və yeni vaxtı aydınlaşdır, təsdiq soruş; ADDIM 2-də: ACTION:{"type":"reschedule_meeting","titleMatch":"görüşün başlığından açar söz","newStartDateTime":"YYYY-MM-DDTHH:mm:00+04:00","newEndDateTime":"YYYY-MM-DDTHH:mm:00+04:00","title":"Vaxt dəyişdirildi","detail":"..."}
    ƏLAVƏ (Hesabat): Əgər istifadəçi hesabat/report istəyirsə ("bu ayın IT ticketlərinin hesabatını hazırla" kimi), 2-addımlı prosesə tabedir: ADDIM 1-də nəyi əhatə edəcəyini (növ, status, müddət) göstər, təsdiq soruş; ADDIM 2-də: ACTION:{"type":"generate_report","title":"Hesabat başlığı","reportType":"leave_request|it_ticket|expense_request və ya boş (hamısı)","reportStatus":"pending|approved|rejected və ya boş (hamısı)","sinceDays":30}
 4. Adi cavab üçün sonunda: SOURCE: Sənəd adı — Section X.X
 5. Qısa, 2-4 cümlə.
@@ -547,6 +548,51 @@ QAYDALAR:
               createdAction = {
                 id: 'cancel-' + Date.now(),
                 type: 'cancel_meeting',
+                title: 'Görüş tapılmadı',
+                detail: 'Uyğun aktiv görüş tapılmadı',
+                status: 'failed'
+              };
+            }
+          } else if (actionData.type === 'reschedule_meeting') {
+            // Görüşün vaxtını dəyişmə - köhnəni Calendar-dan silib, yenisini yeni vaxtda yaradır
+            const { data: matchingMeeting } = await supabase
+              .from('meetings')
+              .select('*')
+              .eq('employee_id', employee.id)
+              .eq('status', 'active')
+              .ilike('title', `%${actionData.titleMatch || ''}%`)
+              .order('created_at', { ascending: false })
+              .limit(1)
+              .maybeSingle();
+
+            if (matchingMeeting && matchingMeeting.calendar_event_id) {
+              // 1) Köhnə hadisəni sil
+              await cancelMeetingViaMake(matchingMeeting.calendar_event_id);
+              await supabase.from('meetings').update({ status: 'cancelled' }).eq('id', matchingMeeting.id);
+
+              // 2) Yeni vaxtda yenisini yarat
+              const meetingResult = await createMeetingViaMake(matchingMeeting.title, actionData.newStartDateTime, actionData.newEndDateTime, matchingMeeting.title);
+              if (meetingResult.success) {
+                await supabase.from('meetings').insert({
+                  company_id: employee.company_id,
+                  employee_id: employee.id,
+                  title: matchingMeeting.title,
+                  start_datetime: actionData.newStartDateTime,
+                  end_datetime: actionData.newEndDateTime,
+                  calendar_event_id: meetingResult.eventId
+                });
+              }
+              createdAction = {
+                id: 'reschedule-' + Date.now(),
+                type: 'reschedule_meeting',
+                title: meetingResult.success ? `Vaxtı dəyişdirildi: ${matchingMeeting.title}` : 'Vaxt dəyişdirilmədi',
+                detail: meetingResult.success ? `Yeni vaxt: ${actionData.newStartDateTime}` : '',
+                status: meetingResult.success ? 'rescheduled' : 'failed'
+              };
+            } else {
+              createdAction = {
+                id: 'reschedule-' + Date.now(),
+                type: 'reschedule_meeting',
                 title: 'Görüş tapılmadı',
                 detail: 'Uyğun aktiv görüş tapılmadı',
                 status: 'failed'
