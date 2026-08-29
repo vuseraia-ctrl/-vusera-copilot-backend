@@ -332,11 +332,13 @@ app.post('/ask', askLimiter, requireAuth, async (req, res) => {
       return res.status(503).json({ error: 'Axtarış sistemi hazırda əlçatan deyil. Bir azdan yenidən cəhd edin.' });
     }
 
-    // 3) Vector axtarışı ilə ən oxşar 4 parçanı tap
+    // 3) Vector axtarışı ilə ən oxşar parçaları tap
+    // "Xülasə et" tipli suallar üçün daha çox parça gətiririk ki, sənədin tam mənzərəsi olsun
+    const isSummaryRequest = /xülas|xulase|qısaca izah|summary|icmal/i.test(question);
     const { data: matches, error: matchError } = await supabase.rpc('match_chunks', {
       query_embedding: queryEmbedding,
       match_company_id: employee.company_id,
-      match_count: 4
+      match_count: isSummaryRequest ? 20 : 4
     });
     if (matchError) throw matchError;
 
@@ -442,6 +444,7 @@ ${directoryText || '(direktoriya boşdur)'}
 QAYDALAR:
 1. Yalnız yuxarıdakı parçalara əsaslan, uydurma.
 2. Əgər kontekst boşdursa və ya sual bununla əlaqəli deyilsə, "Bu məlumat mövcud bilik bazasında tapılmadı" de.
+2.5. Əgər istifadəçi bir sənədin ("bu sənədi", "X sənədini") "xülasə et", "qısaca izah et", "summary" istəyirsə, yuxarıdakı bütün müvafiq parçaları birləşdirib, sənədin ƏSAS MƏZMUNUNU 3-5 cümləyə yığcamlaşdır (bütün əsas bölmələrə toxun, detala getmə).
 3. ƏMƏLİYYAT (məzuniyyət/xərc/IT problemi) İKİ ADDIMLI PROSESDİR:
    ADDIM 1 (Təklif): İstifadəçi ilk dəfə bir iş görülməsini istəyəndə, lazımi məlumatı (tarix, məbləğ, problem) topla, XÜLASƏ ET və aydın şəkildə TƏSDİQ SORUŞ (məs: "Bunu təsdiqləyirsinizmi?"). Bu addımda HEÇ VAXT ACTION yazma.
    ƏGƏR TİP leave_request-dirsə: aşağıdakı "MÖVCUD MƏZUNİYYƏT SORĞULARI" siyahısı VƏ "GOOGLE CALENDAR-DA MƏŞĞUL VAXTLAR" ilə TARİX ÜST-ÜSTƏ DÜŞMƏSİNİ yoxla, üst-üstə düşmə varsa bunu AÇIQ şəkildə xəbərdarlıq et (təsdiq soruşarkən).
@@ -1116,6 +1119,48 @@ app.put('/documents/:id', requireAuth, async (req, res) => {
   }
 });
 
+// Sənədin MƏTNİNİ (məzmununu) redaktə etmək — köhnə parçaları silib, yenisini yenidən chunk+embed edir
+app.put('/documents/:id/content', requireAuth, async (req, res) => {
+  try {
+    if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin sənədi dəyişə bilər' });
+    const { content } = req.body;
+    if (!content) return res.status(400).json({ error: 'content tələb olunur' });
+
+    // 1) Köhnə parçaları sil
+    await supabase.from('document_chunks').delete().eq('document_id', req.params.id);
+
+    // 2) Yeni məzmunu chunk-la, hər parçanı embed edib yenidən yaz
+    const chunks = chunkDocument(content);
+    for (const chunk of chunks) {
+      const embedding = await getEmbedding(chunk.content);
+      const { error: chunkError } = await supabase
+        .from('document_chunks')
+        .insert({ document_id: req.params.id, section_label: chunk.section_label, content: chunk.content, embedding });
+      if (chunkError) throw chunkError;
+    }
+
+    res.json({ success: true, chunksUpdated: chunks.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Sənədin cari tam mətnini gətirir (redaktə pəncərəsini doldurmaq üçün)
+app.get('/documents/:id/content', requireAuth, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('document_chunks')
+      .select('content')
+      .eq('document_id', req.params.id)
+      .order('id', { ascending: true });
+    if (error) throw error;
+    const fullText = (data || []).map(c => c.content).join('\n\n');
+    res.json({ content: fullText });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Sənədi tamamilə silmək (bütün parçaları/embedding-ləri də silinir — cascade)
 app.delete('/documents/:id', requireAuth, async (req, res) => {
   try {
@@ -1590,7 +1635,30 @@ app.get('/analytics/:companyId', requireAuth, async (req, res) => {
       .slice(0, 5)
       .map(([name, count]) => ({ name, count }));
 
-    res.json({ topQuestions, requestsByDepartment, requestsByType, requestsByStatus, mostActiveEmployees });
+    // 6) Management Summary — real reqemlerden Claude-un yazdigi qisa, narrativ xulase
+    let managementSummary = null;
+    try {
+      const summaryPrompt = `Aşağıdakı real şirkət statistikasına əsasən, menecerlər üçün 3-4 cümləlik, təbii dildə QISA bir xülasə yaz (Azərbaycan dilində). Rəqəmləri təkrar sadalama, əvəzinə mənalı bir hekayə/nəticə çıxar (məs. hansı departament ən yüklüdür, hansı sual ən çox təkrarlanır, diqqət tələb edən nöqtə varmı).
+
+Ən çox verilən suallar: ${topQuestions.slice(0, 3).map(q => q.question).join('; ') || 'yoxdur'}
+Departament üzrə sorğular: ${requestsByDepartment.map(d => `${d.department}: ${d.count}`).join(', ') || 'yoxdur'}
+Növ üzrə sorğular: ${requestsByType.map(t => `${t.type}: ${t.count}`).join(', ') || 'yoxdur'}
+Status üzrə: ${requestsByStatus.map(s => `${s.status}: ${s.count}`).join(', ') || 'yoxdur'}
+Ən aktiv işçilər: ${mostActiveEmployees.map(e => `${e.name} (${e.count})`).join(', ') || 'yoxdur'}
+
+Yalnız xülasə mətnini yaz, başqa heç nə.`;
+
+      const summaryMsg = await anthropic.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 250,
+        messages: [{ role: 'user', content: summaryPrompt }]
+      });
+      managementSummary = summaryMsg.content.map(b => b.text || '').join('').trim();
+    } catch (e) {
+      console.error('Management summary yaradıla bilmədi:', e.message);
+    }
+
+    res.json({ topQuestions, requestsByDepartment, requestsByType, requestsByStatus, mostActiveEmployees, managementSummary });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
