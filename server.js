@@ -38,7 +38,7 @@ function isValidUUID(str) {
 // ---- VUSERA Actions Router — bütün Make.com inteqrasiyaları TƏK bir webhook-dan keçir ----
 // (Pulsuz Make planında yalnız 2 aktiv ssenari icazəli olduğu üçün, hamısını "action" sahəsinə görə
 // bir Router-də birləşdirmişik: send_email | check_calendar | create_meeting | read_emails)
-async function callVuseraRouter(action, payload) {
+async function callVuseraRouter(action, payload, retriesLeft = 2) {
   if (!process.env.MAKE_ROUTER_URL) return null;
   try {
     const response = await fetch(process.env.MAKE_ROUTER_URL, {
@@ -46,9 +46,19 @@ async function callVuseraRouter(action, payload) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action, ...payload })
     });
+    if (!response.ok && retriesLeft > 0) {
+      console.error(`Router (${action}) HTTP ${response.status} — yenidən cəhd edilir (${retriesLeft} qalıb)`);
+      await new Promise(r => setTimeout(r, 800));
+      return callVuseraRouter(action, payload, retriesLeft - 1);
+    }
     return await response.json();
   } catch (e) {
-    console.error(`Router (${action}) xətası:`, e.message);
+    if (retriesLeft > 0) {
+      console.error(`Router (${action}) şəbəkə xətası — yenidən cəhd edilir (${retriesLeft} qalıb): ${e.message}`);
+      await new Promise(r => setTimeout(r, 800));
+      return callVuseraRouter(action, payload, retriesLeft - 1);
+    }
+    console.error(`Router (${action}) xətası (bütün cəhdlər bitdi):`, e.message);
     return null;
   }
 }
@@ -468,7 +478,7 @@ QAYDALAR:
 7. Əgər sən REJİM A (adi sual-cavab) ilə cavab verirsənsə VƏ cavabından məntiqli, təbii bir davam əməliyyatı çıxırsa (məs: "Məzuniyyət qaydası" sualından sonra — "istəyirsiniz məzuniyyət sorğusu yaradım?"; "IT Security Policy" sualından sonra — "IT problemi bildirmək istəyirsiniz?"), cavabının SONUNDA (SOURCE-dan da sonra) yeni sətirdə bunu əlavə et: SUGGESTION: qısa təklif mətni (məs: "Məzuniyyət sorğusu yaratmağımı istəyirsiniz?")
    Bunu YALNIZ real, təbii bir davam varsa yaz — hər cavabda məcburi deyil, əksinə əksər sadə faktual suallarda heç bir təklif YAZMA.`;
 
-    // 6) Claude-dan cavab al (söhbət tarixçəsi ilə birlikdə)
+    // 6) Claude-dan cavab al (söhbət tarixçəsi ilə birlikdə) — keçici xətalar üçün 1 dəfə təkrar cəhd
     let message;
     try {
       message = await anthropic.messages.create({
@@ -478,8 +488,19 @@ QAYDALAR:
         messages: conversationMessages
       });
     } catch (e) {
-      console.error('Anthropic API xətası:', e.message);
-      return res.status(503).json({ error: 'VUSERA hazırda cavab verə bilmir. Bir neçə saniyə sonra yenidən cəhd edin.' });
+      console.error('Anthropic API xətası, yenidən cəhd edilir:', e.message);
+      try {
+        await new Promise(r => setTimeout(r, 700));
+        message = await anthropic.messages.create({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 500,
+          system: systemPrompt,
+          messages: conversationMessages
+        });
+      } catch (e2) {
+        console.error('Anthropic API xətası (ikinci cəhd də uğursuz):', e2.message);
+        return res.status(503).json({ error: 'VUSERA hazırda cavab verə bilmir. Bir neçə saniyə sonra yenidən cəhd edin.' });
+      }
     }
 
     let answerText = message.content.map(b => b.text || '').join('');
