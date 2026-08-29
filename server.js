@@ -59,6 +59,42 @@ async function cancelMeetingDirectGoogle(eventId) {
     return { success: false, error: e.message };
   }
 }
+
+// ---- Birbaşa Google Sheets API (Make.com-un icazə problemini keçmək üçün) ----
+function getGoogleSheetsClient() {
+  const oauth2Client = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET
+  );
+  oauth2Client.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN });
+  return google.sheets({ version: 'v4', auth: oauth2Client });
+}
+
+// Hesabatı birbaşa Google Sheets-ə ixrac edir (yeni spreadsheet yaradıb, sətrləri yazır)
+async function exportToSheetsDirectGoogle(title, rows) {
+  if (!process.env.GOOGLE_CLIENT_ID) return { success: false, error: 'Google Sheets birbaşa inteqrasiyası qurulmayıb' };
+  try {
+    const sheets = getGoogleSheetsClient();
+    const createResponse = await sheets.spreadsheets.create({
+      requestBody: { properties: { title } }
+    });
+    const spreadsheetId = createResponse.data.spreadsheetId;
+    const spreadsheetUrl = createResponse.data.spreadsheetUrl;
+
+    const values = rows.map(r => r.values);
+    await sheets.spreadsheets.values.append({
+      spreadsheetId,
+      range: 'A1',
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values }
+    });
+
+    return { success: true, spreadsheetUrl };
+  } catch (e) {
+    console.error('Google Sheets (birbaşa) xətası:', e.message);
+    return { success: false, error: e.message };
+  }
+}
 import { supabase, supabaseAuth, getEmbedding, chunkDocument } from './lib.js';
 
 const app = express();
@@ -697,7 +733,7 @@ QAYDALAR:
               const dataRows = (sheetRows || []).map(r => ({
                 values: [r.title, r.type, r.status, r.employees?.name || '-', new Date(r.created_at).toLocaleDateString('az-AZ'), r.detail || '']
               }));
-              const sheetsResult = await exportToSheetsViaMake(actionData.title, [header, ...dataRows]);
+              const sheetsResult = await exportToSheetsDirectGoogle(actionData.title, [header, ...dataRows]);
               createdAction = {
                 id: 'sheets-' + Date.now(),
                 type: 'generate_report',
