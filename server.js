@@ -627,7 +627,8 @@ QAYDALAR:
    (İstifadəçi "excel", "sheets", "cədvəl" desə format="sheets"; "PDF" və ya heç nə deməsə format="pdf")
 4. Adi cavab üçün sonunda: SOURCE: Sənəd adı — Section X.X
 5. Qısa, 2-4 cümlə.
-6. Əgər yuxarıda "SON EMAİLLƏR" bölməsi verilibsə, istifadəçi bunları xülasə etməyi istəyirsə, hər emaili 1 sətirdə (kimdən, mövzu) yığcam göstər.
+6. Əgər yuxarıda "SON EMAİLLƏR" bölməsi verilibsə, istifadəçi bunları xülasə etməyi istəyirsə, hər emaili 1 sətirdə (kimdən, mövzu) yığcam göstər, VƏ hər emailin qarşısına kateqoriya etiketi əlavə et: 🔴 Təcili (fəaliyyət tələb edən/vaxt həssas), 🔵 İnformasiya (sadəcə bilgi), 🟢 Marketinq/Newsletter. Kateqoriyayı emailın mövzusuna/məzmununa görə özün müəyyən et.
+6.5. Əgər istifadəçi bir email üçün "follow-up yarat", "xatırlat" desə, 2-addımlı prosesə tabedir: ADDIM 1-də hansı email və neçə gündən sonra xatırladılacağını aydınlaşdır, təsdiq soruş; ADDIM 2-də: ACTION:{"type":"email_followup","emailSubject":"email mövzusu","daysLater":3,"title":"Email Follow-up Planlaşdırıldı","detail":"..."}
 7. Əgər sən REJİM A (adi sual-cavab) ilə cavab verirsənsə VƏ cavabından məntiqli, təbii bir davam əməliyyatı çıxırsa (məs: "Məzuniyyət qaydası" sualından sonra — "istəyirsiniz məzuniyyət sorğusu yaradım?"; "IT Security Policy" sualından sonra — "IT problemi bildirmək istəyirsiniz?"), cavabının SONUNDA (SOURCE-dan da sonra) yeni sətirdə bunu əlavə et: SUGGESTION: qısa təklif mətni (məs: "Məzuniyyət sorğusu yaratmağımı istəyirsiniz?")
    Bunu YALNIZ real, təbii bir davam varsa yaz — hər cavabda məcburi deyil, əksinə əksər sadə faktual suallarda heç bir təklif YAZMA.`;
 
@@ -696,11 +697,26 @@ QAYDALAR:
                 calendar_event_id: meetingResult.eventId
               });
             }
+
+            // Meeting Preparation — görüşün başlığına uyğun sənədləri axtarıb, hazırlıq materialı kimi əlavə edirik
+            let prepNote = '';
+            try {
+              const titleEmbedding = await getEmbedding(actionData.title);
+              const { data: prepMatches } = await supabase.rpc('match_chunks', {
+                query_embedding: titleEmbedding,
+                match_company_id: employee.company_id,
+                match_count: 2
+              });
+              if (prepMatches && prepMatches.length > 0 && prepMatches[0].similarity > 0.5) {
+                prepNote = ` · Hazırlıq: "${prepMatches[0].section_label}" sənədinə baxın`;
+              }
+            } catch (e) { /* prep axtarışı uğursuz olsa, sakitcə keç */ }
+
             createdAction = {
               id: 'meeting-' + Date.now(),
               type: 'create_meeting',
               title: meetingResult.success ? actionData.title : 'Görüş yaradılmadı',
-              detail: actionData.startDateTime || '',
+              detail: (actionData.startDateTime || '') + prepNote,
               status: meetingResult.success ? 'created' : 'failed'
             };
           } else if (actionData.type === 'cancel_meeting') {
@@ -736,6 +752,23 @@ QAYDALAR:
                 status: 'failed'
               };
             }
+          } else if (actionData.type === 'email_followup') {
+            // Email follow-up planlaşdırma - gələcək tarixli xatırlatma yaradır (meetings cədvəlini yenidən istifadə edərək)
+            const followUpDate = new Date(Date.now() + (actionData.daysLater || 3) * 24 * 60 * 60 * 1000);
+            await supabase.from('meetings').insert({
+              company_id: employee.company_id,
+              employee_id: employee.id,
+              title: `📧 Follow-up: ${actionData.emailSubject}`,
+              start_datetime: followUpDate.toISOString(),
+              status: 'active'
+            });
+            createdAction = {
+              id: 'followup-' + Date.now(),
+              type: 'email_followup',
+              title: `Follow-up Planlaşdırıldı: ${actionData.emailSubject}`,
+              detail: `${actionData.daysLater || 3} gündən sonra xatırladılacaq`,
+              status: 'created'
+            };
           } else if (actionData.type === 'create_crm_contact') {
             // CRM Kontakt yaratma - birbaşa HubSpot API-sinə gedir
             const crmResult = await createHubSpotContact(actionData.firstname, actionData.lastname, actionData.email, actionData.phone, actionData.company);
@@ -1055,7 +1088,7 @@ app.post('/ingest', ingestLimiter, requireAuth, async (req, res) => {
   try {
     if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin sənəd yükləyə bilər' });
 
-    const { companyId, title, docCode, content, fileBase64, fileType, restrictedRoles } = req.body;
+    const { companyId, title, docCode, content, fileBase64, fileType, restrictedRoles, isTemplate } = req.body;
     if (!companyId || !title) {
       return res.status(400).json({ error: 'companyId və title tələb olunur' });
     }
@@ -1104,7 +1137,7 @@ app.post('/ingest', ingestLimiter, requireAuth, async (req, res) => {
 
     const { data: doc, error: docError } = await supabase
       .from('documents')
-      .insert({ company_id: companyId, title, doc_code: docCode || null, restricted_to_roles: restricted, file_url: fileUrl })
+      .insert({ company_id: companyId, title, doc_code: docCode || null, restricted_to_roles: restricted, file_url: fileUrl, is_template: !!isTemplate })
       .select()
       .single();
     if (docError) throw docError;
@@ -1118,6 +1151,13 @@ app.post('/ingest', ingestLimiter, requireAuth, async (req, res) => {
         .insert({ document_id: doc.id, section_label: chunk.section_label, content: chunk.content, embedding });
       if (chunkError) throw chunkError;
       count++;
+    }
+
+    // Document-to-Workflow: başlıqda "URGENT" / "TƏCİLİ" varsa, avtomatik bütün manager/admin-lərə bildir
+    if (/urgent|təcili|acil/i.test(title)) {
+      const { data: allStaff } = await supabase.from('employees').select('id, role').eq('company_id', companyId);
+      (allStaff || []).filter(m => m.role === 'Admin' || m.role.includes('Manager'))
+        .forEach(m => createNotification(companyId, m.id, `🚨 Təcili sənəd yükləndi: "${title}" — nəzərdən keçirin.`, null));
     }
 
     res.json({ success: true, documentId: doc.id, chunksCreated: count });
@@ -1380,6 +1420,61 @@ app.get('/documents/:id/content', requireAuth, async (req, res) => {
     if (error) throw error;
     const fullText = (data || []).map(c => c.content).join('\n\n');
     res.json({ content: fullText });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Şablonların siyahısı (yalnız is_template=true olanlar)
+app.get('/documents/:companyId/templates', requireAuth, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('documents')
+      .select('id, title, doc_code')
+      .eq('company_id', req.params.companyId)
+      .eq('is_template', true);
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Şablon əsasında yeni sənəd yaradır — {{PLACEHOLDER}} formatındakı yerləri doldurur
+app.post('/documents/from-template', requireAuth, async (req, res) => {
+  try {
+    if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin sənəd yarada bilər' });
+    const { templateId, newTitle, replacements } = req.body;
+    if (!templateId || !newTitle) return res.status(400).json({ error: 'templateId və newTitle tələb olunur' });
+
+    const { data: templateDoc } = await supabase.from('documents').select('*').eq('id', templateId).single();
+    if (!templateDoc) return res.status(404).json({ error: 'Şablon tapılmadı' });
+
+    const { data: chunks } = await supabase
+      .from('document_chunks')
+      .select('content')
+      .eq('document_id', templateId)
+      .order('id', { ascending: true });
+
+    let fullText = (chunks || []).map(c => c.content).join('\n\n');
+    for (const [key, value] of Object.entries(replacements || {})) {
+      fullText = fullText.replaceAll(`{{${key}}}`, value);
+    }
+
+    const { data: newDoc, error: docError } = await supabase
+      .from('documents')
+      .insert({ company_id: templateDoc.company_id, title: newTitle, restricted_to_roles: templateDoc.restricted_to_roles, is_template: false })
+      .select()
+      .single();
+    if (docError) throw docError;
+
+    const newChunks = chunkDocument(fullText);
+    for (const chunk of newChunks) {
+      const embedding = await getEmbedding(chunk.content);
+      await supabase.from('document_chunks').insert({ document_id: newDoc.id, section_label: chunk.section_label, content: chunk.content, embedding });
+    }
+
+    res.json({ success: true, document: newDoc });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
