@@ -8,6 +8,7 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import crypto from 'crypto';
 import rateLimit from 'express-rate-limit';
 import Anthropic from '@anthropic-ai/sdk';
 import pdfParse from 'pdf-parse';
@@ -1570,6 +1571,30 @@ app.post('/delegations', requireAuth, async (req, res) => {
   }
 });
 
+// ---- Şirkət-səviyyəli API Key idarəetməsi (Granular RBAC-in davamı) ----
+app.get('/api-key/:companyId', requireAuth, async (req, res) => {
+  try {
+    if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin API açarını görə bilər' });
+    const { data, error } = await supabase.from('companies').select('api_key').eq('id', req.params.companyId).single();
+    if (error) throw error;
+    res.json({ apiKey: data.api_key });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api-key/:companyId/regenerate', requireAuth, async (req, res) => {
+  try {
+    if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin API açarını yeniləyə bilər' });
+    const newKey = crypto.randomBytes(24).toString('hex');
+    const { data, error } = await supabase.from('companies').update({ api_key: newKey }).eq('id', req.params.companyId).select('api_key').single();
+    if (error) throw error;
+    res.json({ success: true, apiKey: data.api_key });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/delegations/:companyId', requireAuth, async (req, res) => {
   try {
     if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin görə bilər' });
@@ -1790,7 +1815,31 @@ app.post('/proactive/check-reminders', async (req, res) => {
       escalatedCount++;
     }
 
-    res.json({ success: true, remindersSent, meetingRemindersSent, escalatedCount });
+    // ---- Automated Follow-up — 1 gün əvvəl HƏLL OLUNMUŞ IT ticket-lər üçün "tam həll olubmu?" sualı ----
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const twoDaysAgoForFollowup = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+
+    const { data: resolvedTickets } = await supabase
+      .from('action_requests')
+      .select('*, employees!employee_id(id, name, company_id)')
+      .eq('type', 'it_ticket')
+      .eq('status', 'approved')
+      .eq('followed_up', false)
+      .lt('approved_at', oneDayAgo)
+      .gt('approved_at', twoDaysAgoForFollowup);
+
+    let followUpsSent = 0;
+    for (const ticket of resolvedTickets || []) {
+      const emp = ticket.employees;
+      if (!emp) continue;
+      await createNotification(emp.company_id, emp.id,
+        `🔁 Xatırlatma: "${ticket.title}" problemi dünən həll edilmişdi — tam həll olduğunu təsdiqləyirsinizmi? Problem davam edirsə, yeni bir ticket yarada bilərsiniz.`,
+        ticket.id);
+      await supabase.from('action_requests').update({ followed_up: true }).eq('id', ticket.id);
+      followUpsSent++;
+    }
+
+    res.json({ success: true, remindersSent, meetingRemindersSent, escalatedCount, followUpsSent });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
