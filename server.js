@@ -60,6 +60,27 @@ async function cancelMeetingDirectGoogle(eventId) {
   }
 }
 
+// ---- Birbaşa Slack API (Make.com-un client_id problemini keçmək üçün) ----
+async function sendSlackMessage(channel, text) {
+  if (!process.env.SLACK_BOT_TOKEN) return { success: false, error: 'Slack inteqrasiyası qurulmayıb' };
+  try {
+    const response = await fetch('https://slack.com/api/chat.postMessage', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}`
+      },
+      body: JSON.stringify({ channel, text })
+    });
+    const data = await response.json();
+    if (!data.ok) return { success: false, error: data.error };
+    return { success: true };
+  } catch (e) {
+    console.error('Slack xətası:', e.message);
+    return { success: false, error: e.message };
+  }
+}
+
 // ---- Birbaşa Google Sheets API (Make.com-un icazə problemini keçmək üçün) ----
 function getGoogleSheetsClient() {
   const oauth2Client = new google.auth.OAuth2(
@@ -545,6 +566,7 @@ QAYDALAR:
    İstifadəçi "yox" desə və ya fikrini dəyişsə, ACTION yazma, "Ləğv edildi" de.
    VACİB: ACTION marker-i yazırsansa, o, cavabının MÜTLƏQ SON HİSSƏSİ olmalıdır — ondan sonra HEÇ BİR söz, HEÇ BİR salamlama, HEÇ BİR emoji yazma.
    ÇOX-ADDIMLI TAPŞIRIQ DƏSTƏYİ: Əgər istifadəçi tapşırıqla YANAŞI, kiməsə bu barədə email ilə xəbər verilməsini də istəyirsə (məs: "IT ticket yarat VƏ Michael-ə də bildir"), ACTION obyektinə əlavə "notifyEmail" (real direktoriya email ünvanı) və "notifyNote" (qısa bildiriş mətni) sahələrini əlavə et — sistem əsas əməliyyatdan SONRA avtomatik bu email-i də göndərəcək.
+   ƏLAVƏ: Əgər istifadəçi "Slack-ə də yaz/bildir" desə, ACTION obyektinə "notifySlackChannel" (məs: "#general") və "notifySlackNote" sahələrini əlavə et.
    - leave_request üçün category: "annual" | "sick" | "unpaid" | "emergency"; start_date/end_date MÜTLƏQ doldurulmalıdır (il göstərilməsə, ${new Date().getFullYear()} il qəbul et)
    - it_ticket üçün category: "hardware" | "software" | "access" | "network"; priority: problemi ciddiliyinə görə seç (mes: "işləmir" = high, "yavaşdır" = normal); start_date/end_date lazım deyil, boş buraxa bilərsən
    - expense_request üçün category: "travel" | "meals" | "office" | "other"; start_date/end_date lazım deyil; "amount" sahəsinə MÜTLƏQ rəqəm (yalnız ədəd, valyuta olmadan) yaz, məs: 2500
@@ -832,6 +854,14 @@ QAYDALAR:
             if (notifyMatch) {
               await sendEmailViaMake(actionData.notifyEmail, `Yeni bildiriş: ${createdAction.title}`, actionData.notifyNote || createdAction.detail || '');
               createdAction.detail = (createdAction.detail || '') + ` · ${actionData.notifyEmail}-ə də bildirildi`;
+            }
+          }
+
+          // ÇOX-ADDIMLI TAPŞIRIQ: əsas əməliyyatdan sonra, istəyə bağlı əlavə Slack addımı
+          if (actionData.notifySlackChannel && createdAction && createdAction.status !== 'failed') {
+            const slackResult = await sendSlackMessage(actionData.notifySlackChannel, actionData.notifySlackNote || `${createdAction.title}: ${createdAction.detail || ''}`);
+            if (slackResult.success) {
+              createdAction.detail = (createdAction.detail || '') + ` · Slack-ə (${actionData.notifySlackChannel}) bildirildi`;
             }
           }
         } catch (e) {
