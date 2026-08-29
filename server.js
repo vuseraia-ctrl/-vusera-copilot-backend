@@ -917,7 +917,10 @@ QAYDALAR:
           // ÇOX-ADDIMLI TAPŞIRIQ: əsas əməliyyatdan sonra, istəyə bağlı əlavə Slack addımı
           // Etibarlılıq üçün, Claude-un ACTION-a əlavə etməsinə güvənməklə yanaşı,
           // SÖHBƏT TARİXÇƏSİNDƏN (cari mesaj + əvvəlki suallar) də birbaşa kanal adını axtarırıq
-          const fullConversationText = question + ' ' + (history || []).map(h => h.question).join(' ');
+          // YALNIZ bilavasitə əvvəlki 1 mesaja (bu konkret təklif-təsdiq cütünə) baxırıq,
+          // bütün tarixçəyə yox — köhnə, əlaqəsiz Slack sorğularının səhvən təkrarlanmasının qarşısını almaq üçün
+          const immediatelyPriorQuestion = (history && history.length > 0) ? history[history.length - 1].question : '';
+          const fullConversationText = question + ' ' + immediatelyPriorQuestion;
           const slackChannelFromQuestion = fullConversationText.match(/#([\wƏəÇçŞşĞğİıÖöÜü-]+)/);
           const wantsSlack = /slack/i.test(fullConversationText);
           const finalSlackChannel = actionData.notifySlackChannel || (wantsSlack && slackChannelFromQuestion ? `#${slackChannelFromQuestion[1]}` : null);
