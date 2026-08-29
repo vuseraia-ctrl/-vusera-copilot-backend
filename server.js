@@ -566,7 +566,7 @@ QAYDALAR:
    İstifadəçi "yox" desə və ya fikrini dəyişsə, ACTION yazma, "Ləğv edildi" de.
    VACİB: ACTION marker-i yazırsansa, o, cavabının MÜTLƏQ SON HİSSƏSİ olmalıdır — ondan sonra HEÇ BİR söz, HEÇ BİR salamlama, HEÇ BİR emoji yazma.
    ÇOX-ADDIMLI TAPŞIRIQ DƏSTƏYİ: Əgər istifadəçi tapşırıqla YANAŞI, kiməsə bu barədə email ilə xəbər verilməsini də istəyirsə (məs: "IT ticket yarat VƏ Michael-ə də bildir"), ACTION obyektinə əlavə "notifyEmail" (real direktoriya email ünvanı) və "notifyNote" (qısa bildiriş mətni) sahələrini əlavə et — sistem əsas əməliyyatdan SONRA avtomatik bu email-i də göndərəcək.
-   ƏLAVƏ: Əgər istifadəçi "Slack-ə də yaz/bildir" desə, ACTION obyektinə "notifySlackChannel" (məs: "#general") və "notifySlackNote" sahələrini əlavə et.
+   ƏLAVƏ: Əgər istifadəçi "Slack-ə də yaz/bildir" desə, VACİB: ADDIM 2-də (təsdiqdən sonra), ACTION JSON-un İÇİNƏ MÜTLƏQ "notifySlackChannel" (məs: "#all-vusera") və "notifySlackNote" sahələrini də yaz — bunu unutma, çünki bu, ADDIM 1-də vəd etdiyin bir işdir. Məsələn: ACTION:{"type":"it_ticket",...,"notifySlackChannel":"#all-vusera","notifySlackNote":"Yeni IT ticket: Laptop işləmir"}
    - leave_request üçün category: "annual" | "sick" | "unpaid" | "emergency"; start_date/end_date MÜTLƏQ doldurulmalıdır (il göstərilməsə, ${new Date().getFullYear()} il qəbul et)
    - it_ticket üçün category: "hardware" | "software" | "access" | "network"; priority: problemi ciddiliyinə görə seç (mes: "işləmir" = high, "yavaşdır" = normal); start_date/end_date lazım deyil, boş buraxa bilərsən
    - expense_request üçün category: "travel" | "meals" | "office" | "other"; start_date/end_date lazım deyil; "amount" sahəsinə MÜTLƏQ rəqəm (yalnız ədəd, valyuta olmadan) yaz, məs: 2500
