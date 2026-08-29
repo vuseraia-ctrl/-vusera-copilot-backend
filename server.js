@@ -858,10 +858,19 @@ QAYDALAR:
           }
 
           // ÇOX-ADDIMLI TAPŞIRIQ: əsas əməliyyatdan sonra, istəyə bağlı əlavə Slack addımı
-          if (actionData.notifySlackChannel && createdAction && createdAction.status !== 'failed') {
-            const slackResult = await sendSlackMessage(actionData.notifySlackChannel, actionData.notifySlackNote || `${createdAction.title}: ${createdAction.detail || ''}`);
+          // Etibarlılıq üçün, Claude-un ACTION-a əlavə etməsinə güvənməklə yanaşı,
+          // SÖHBƏT TARİXÇƏSİNDƏN (cari mesaj + əvvəlki suallar) də birbaşa kanal adını axtarırıq
+          const fullConversationText = question + ' ' + (history || []).map(h => h.question).join(' ');
+          const slackChannelFromQuestion = fullConversationText.match(/#([\wƏəÇçŞşĞğİıÖöÜü-]+)/);
+          const wantsSlack = /slack/i.test(fullConversationText);
+          const finalSlackChannel = actionData.notifySlackChannel || (wantsSlack && slackChannelFromQuestion ? `#${slackChannelFromQuestion[1]}` : null);
+
+          if (finalSlackChannel && createdAction && createdAction.status !== 'failed') {
+            const slackResult = await sendSlackMessage(finalSlackChannel, actionData.notifySlackNote || `${createdAction.title}: ${createdAction.detail || ''}`);
             if (slackResult.success) {
-              createdAction.detail = (createdAction.detail || '') + ` · Slack-ə (${actionData.notifySlackChannel}) bildirildi`;
+              createdAction.detail = (createdAction.detail || '') + ` · Slack-ə (${finalSlackChannel}) bildirildi`;
+            } else {
+              console.error('Slack göndərilmədi:', slackResult.error);
             }
           }
         } catch (e) {
