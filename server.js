@@ -16,21 +16,34 @@ import mammoth from 'mammoth';
 import PDFDocument from 'pdfkit';
 import { google } from 'googleapis';
 
+// ---- Şirkət-səviyyəli inteqrasiya açarlarını gətirir (yoxdursa, VUSERA-nın öz demo açarlarına qayıdır) ----
+async function getCompanyIntegrationCreds(companyId) {
+  if (!companyId) return {};
+  const { data } = await supabase
+    .from('companies')
+    .select('google_client_id, google_client_secret, google_refresh_token, slack_bot_token, hubspot_access_token')
+    .eq('id', companyId)
+    .single();
+  return data || {};
+}
+
 // ---- Birbaşa Google Calendar API (Make.com-u keçərək — "createAnEvent" bug-unu aradan qaldırmaq üçün) ----
-function getGoogleCalendarClient() {
-  const oauth2Client = new google.auth.OAuth2(
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET
-  );
-  oauth2Client.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN });
+async function getGoogleCalendarClient(companyId) {
+  const creds = await getCompanyIntegrationCreds(companyId);
+  const clientId = creds.google_client_id || process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = creds.google_client_secret || process.env.GOOGLE_CLIENT_SECRET;
+  const refreshToken = creds.google_refresh_token || process.env.GOOGLE_REFRESH_TOKEN;
+  if (!clientId) return null;
+  const oauth2Client = new google.auth.OAuth2(clientId, clientSecret);
+  oauth2Client.setCredentials({ refresh_token: refreshToken });
   return google.calendar({ version: 'v3', auth: oauth2Client });
 }
 
-// Görüş yaradır — birbaşa Google Calendar API ilə (Make.com-suz)
-async function createMeetingDirectGoogle(title, startDateTime, endDateTime, description) {
-  if (!process.env.GOOGLE_CLIENT_ID) return { success: false, error: 'Google Calendar birbaşa inteqrasiyası qurulmayıb' };
+// Görüş yaradır — birbaşa Google Calendar API ilə (Make.com-suz), şirkətin öz açarları ilə (varsa)
+async function createMeetingDirectGoogle(companyId, title, startDateTime, endDateTime, description) {
+  const calendar = await getGoogleCalendarClient(companyId);
+  if (!calendar) return { success: false, error: 'Google Calendar inteqrasiyası qurulmayıb' };
   try {
-    const calendar = getGoogleCalendarClient();
     const response = await calendar.events.insert({
       calendarId: 'primary',
       requestBody: {
@@ -48,10 +61,10 @@ async function createMeetingDirectGoogle(title, startDateTime, endDateTime, desc
 }
 
 // Görüşü ləğv edir — birbaşa Google Calendar API ilə
-async function cancelMeetingDirectGoogle(eventId) {
-  if (!process.env.GOOGLE_CLIENT_ID) return { success: false };
+async function cancelMeetingDirectGoogle(companyId, eventId) {
+  const calendar = await getGoogleCalendarClient(companyId);
+  if (!calendar) return { success: false };
   try {
-    const calendar = getGoogleCalendarClient();
     await calendar.events.delete({ calendarId: 'primary', eventId });
     return { success: true };
   } catch (e) {
@@ -61,20 +74,15 @@ async function cancelMeetingDirectGoogle(eventId) {
 }
 
 // ---- Birbaşa HubSpot CRM API ----
-async function searchHubSpotContact(query) {
-  if (!process.env.HUBSPOT_ACCESS_TOKEN) return { success: false, error: 'HubSpot inteqrasiyası qurulmayıb' };
+async function searchHubSpotContact(companyId, query) {
+  const creds = await getCompanyIntegrationCreds(companyId);
+  const token = creds.hubspot_access_token || process.env.HUBSPOT_ACCESS_TOKEN;
+  if (!token) return { success: false, error: 'HubSpot inteqrasiyası qurulmayıb' };
   try {
     const response = await fetch('https://api.hubapi.com/crm/v3/objects/contacts/search', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.HUBSPOT_ACCESS_TOKEN}`
-      },
-      body: JSON.stringify({
-        query,
-        properties: ['firstname', 'lastname', 'email', 'phone', 'company'],
-        limit: 5
-      })
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ query, properties: ['firstname', 'lastname', 'email', 'phone', 'company'], limit: 5 })
     });
     const data = await response.json();
     if (!response.ok) return { success: false, error: data.message };
@@ -85,15 +93,14 @@ async function searchHubSpotContact(query) {
   }
 }
 
-async function createHubSpotContact(firstname, lastname, email, phone, company) {
-  if (!process.env.HUBSPOT_ACCESS_TOKEN) return { success: false, error: 'HubSpot inteqrasiyası qurulmayıb' };
+async function createHubSpotContact(companyId, firstname, lastname, email, phone, company) {
+  const creds = await getCompanyIntegrationCreds(companyId);
+  const token = creds.hubspot_access_token || process.env.HUBSPOT_ACCESS_TOKEN;
+  if (!token) return { success: false, error: 'HubSpot inteqrasiyası qurulmayıb' };
   try {
     const response = await fetch('https://api.hubapi.com/crm/v3/objects/contacts', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.HUBSPOT_ACCESS_TOKEN}`
-      },
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
       body: JSON.stringify({ properties: { firstname, lastname, email, phone, company } })
     });
     const data = await response.json();
@@ -107,15 +114,14 @@ async function createHubSpotContact(firstname, lastname, email, phone, company) 
 
 
 // ---- Birbaşa Slack API (Make.com-un client_id problemini keçmək üçün) ----
-async function sendSlackMessage(channel, text) {
-  if (!process.env.SLACK_BOT_TOKEN) return { success: false, error: 'Slack inteqrasiyası qurulmayıb' };
+async function sendSlackMessage(companyId, channel, text) {
+  const creds = await getCompanyIntegrationCreds(companyId);
+  const token = creds.slack_bot_token || process.env.SLACK_BOT_TOKEN;
+  if (!token) return { success: false, error: 'Slack inteqrasiyası qurulmayıb' };
   try {
     const response = await fetch('https://slack.com/api/chat.postMessage', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}`
-      },
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
       body: JSON.stringify({ channel, text })
     });
     const data = await response.json();
@@ -128,20 +134,20 @@ async function sendSlackMessage(channel, text) {
 }
 
 // ---- Birbaşa Google Sheets API (Make.com-un icazə problemini keçmək üçün) ----
-function getGoogleSheetsClient() {
-  const oauth2Client = new google.auth.OAuth2(
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET
-  );
-  oauth2Client.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN });
+async function getGoogleSheetsClient(companyId) {
+  const creds = await getCompanyIntegrationCreds(companyId);
+  const clientId = creds.google_client_id || process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = creds.google_client_secret || process.env.GOOGLE_CLIENT_SECRET;
+  const refreshToken = creds.google_refresh_token || process.env.GOOGLE_REFRESH_TOKEN;
+  const oauth2Client = new google.auth.OAuth2(clientId, clientSecret);
+  oauth2Client.setCredentials({ refresh_token: refreshToken });
   return google.sheets({ version: 'v4', auth: oauth2Client });
 }
 
 // Hesabatı birbaşa Google Sheets-ə ixrac edir (yeni spreadsheet yaradıb, sətrləri yazır)
-async function exportToSheetsDirectGoogle(title, rows) {
-  if (!process.env.GOOGLE_CLIENT_ID) return { success: false, error: 'Google Sheets birbaşa inteqrasiyası qurulmayıb' };
+async function exportToSheetsDirectGoogle(companyId, title, rows) {
   try {
-    const sheets = getGoogleSheetsClient();
+    const sheets = await getGoogleSheetsClient(companyId);
     const createResponse = await sheets.spreadsheets.create({
       requestBody: { properties: { title } }
     });
@@ -686,7 +692,7 @@ QAYDALAR:
             };
           } else if (actionData.type === 'create_meeting') {
             // Görüş yaratma - approval axınına yox, birbaşa Google Calendar-a gedir
-            const meetingResult = await createMeetingDirectGoogle(actionData.title, actionData.startDateTime, actionData.endDateTime, actionData.description || '');
+            const meetingResult = await createMeetingDirectGoogle(employee.company_id, actionData.title, actionData.startDateTime, actionData.endDateTime, actionData.description || '');
             if (meetingResult.success) {
               await supabase.from('meetings').insert({
                 company_id: employee.company_id,
@@ -732,7 +738,7 @@ QAYDALAR:
               .maybeSingle();
 
             if (matchingMeeting && matchingMeeting.calendar_event_id) {
-              const cancelResult = await cancelMeetingDirectGoogle(matchingMeeting.calendar_event_id);
+              const cancelResult = await cancelMeetingDirectGoogle(employee.company_id, matchingMeeting.calendar_event_id);
               if (cancelResult.success) {
                 await supabase.from('meetings').update({ status: 'cancelled' }).eq('id', matchingMeeting.id);
               }
@@ -771,7 +777,7 @@ QAYDALAR:
             };
           } else if (actionData.type === 'create_crm_contact') {
             // CRM Kontakt yaratma - birbaşa HubSpot API-sinə gedir
-            const crmResult = await createHubSpotContact(actionData.firstname, actionData.lastname, actionData.email, actionData.phone, actionData.company);
+            const crmResult = await createHubSpotContact(employee.company_id, actionData.firstname, actionData.lastname, actionData.email, actionData.phone, actionData.company);
             createdAction = {
               id: 'crm-' + Date.now(),
               type: 'create_crm_contact',
@@ -793,11 +799,11 @@ QAYDALAR:
 
             if (matchingMeeting && matchingMeeting.calendar_event_id) {
               // 1) Köhnə hadisəni sil
-              await cancelMeetingDirectGoogle(matchingMeeting.calendar_event_id);
+              await cancelMeetingDirectGoogle(employee.company_id, matchingMeeting.calendar_event_id);
               await supabase.from('meetings').update({ status: 'cancelled' }).eq('id', matchingMeeting.id);
 
               // 2) Yeni vaxtda yenisini yarat
-              const meetingResult = await createMeetingDirectGoogle(matchingMeeting.title, actionData.newStartDateTime, actionData.newEndDateTime, matchingMeeting.title);
+              const meetingResult = await createMeetingDirectGoogle(employee.company_id, matchingMeeting.title, actionData.newStartDateTime, actionData.newEndDateTime, matchingMeeting.title);
               if (meetingResult.success) {
                 await supabase.from('meetings').insert({
                   company_id: employee.company_id,
@@ -845,7 +851,7 @@ QAYDALAR:
               const dataRows = (sheetRows || []).map(r => ({
                 values: [r.title, r.type, r.status, r.employees?.name || '-', new Date(r.created_at).toLocaleDateString('az-AZ'), r.detail || '']
               }));
-              const sheetsResult = await exportToSheetsDirectGoogle(actionData.title, [header, ...dataRows]);
+              const sheetsResult = await exportToSheetsDirectGoogle(employee.company_id, actionData.title, [header, ...dataRows]);
               createdAction = {
                 id: 'sheets-' + Date.now(),
                 type: 'generate_report',
@@ -959,7 +965,7 @@ QAYDALAR:
           const finalSlackChannel = actionData.notifySlackChannel || (wantsSlack && slackChannelFromQuestion ? `#${slackChannelFromQuestion[1]}` : null);
 
           if (finalSlackChannel && createdAction && createdAction.status !== 'failed') {
-            const slackResult = await sendSlackMessage(finalSlackChannel, actionData.notifySlackNote || `${createdAction.title}: ${createdAction.detail || ''}`);
+            const slackResult = await sendSlackMessage(employee.company_id, finalSlackChannel, actionData.notifySlackNote || `${createdAction.title}: ${createdAction.detail || ''}`);
             if (slackResult.success) {
               createdAction.detail = (createdAction.detail || '') + ` · Slack-ə (${finalSlackChannel}) bildirildi`;
             } else {
@@ -1294,7 +1300,7 @@ app.delete('/employees/:id', requireAuth, async (req, res) => {
       .eq('status', 'active');
     for (const m of (activeMeetings || [])) {
       if (m.calendar_event_id) {
-        const cancelResult = await cancelMeetingDirectGoogle(m.calendar_event_id);
+        const cancelResult = await cancelMeetingDirectGoogle(data.company_id, m.calendar_event_id);
         if (cancelResult.success) {
           await supabase.from('meetings').update({ status: 'cancelled' }).eq('id', m.id);
         }
@@ -1332,6 +1338,68 @@ app.delete('/employees/:id', requireAuth, async (req, res) => {
 });
 
 // Yeni şirkət (workspace) yaratmaq — hər müştəri üçün ayrıca mühit
+// ---- YENİ ŞİRKƏT ONBOARDING — bir çağırışla: şirkət + standart departamentlər + Admin hesabı ----
+// Bu, yalnız VUSERA-nın öz komandası (API_SECRET bilən) tərəfindən çağırılmalıdır — yeni müştəri əlavə etmək üçün.
+app.post('/onboarding/new-company', async (req, res) => {
+  try {
+    const { companyName, adminName, adminEmail } = req.body;
+    if (!companyName || !adminName || !adminEmail) {
+      return res.status(400).json({ error: 'companyName, adminName və adminEmail tələb olunur' });
+    }
+
+    // 1) Şirkəti yarat
+    const { data: company, error: companyError } = await supabase
+      .from('companies')
+      .insert({ name: companyName })
+      .select()
+      .single();
+    if (companyError) throw companyError;
+
+    // 2) Standart 5 departamenti yarat (HR, IT, Finance, Sales, Operations)
+    const deptNames = ['HR', 'IT', 'Finance', 'Sales', 'Operations'];
+    const { data: depts, error: deptError } = await supabase
+      .from('departments')
+      .insert(deptNames.map(name => ({ company_id: company.id, name })))
+      .select();
+    if (deptError) throw deptError;
+    const adminDept = depts.find(d => d.name === 'Operations') || depts[0];
+
+    // 3) Admin üçün Supabase Auth hesabı yarat (müvəqqəti parolla)
+    const temporaryPassword = 'Vusera' + Math.random().toString(36).slice(-8) + '!';
+    const { data: authUser, error: authError } = await supabase.auth.admin.createUser({
+      email: adminEmail,
+      password: temporaryPassword,
+      email_confirm: true
+    });
+    if (authError) throw authError;
+
+    // 4) Admin işçi qeydini yarat, auth hesabı ilə bağla
+    const { data: adminEmp, error: empError } = await supabase
+      .from('employees')
+      .insert({
+        company_id: company.id,
+        department_id: adminDept.id,
+        name: adminName,
+        email: adminEmail,
+        role: 'Admin',
+        auth_user_id: authUser.user.id,
+        status: 'active'
+      })
+      .select()
+      .single();
+    if (empError) throw empError;
+
+    res.json({
+      success: true,
+      company: { id: company.id, name: company.name },
+      departments: depts.map(d => ({ id: d.id, name: d.name })),
+      admin: { name: adminName, email: adminEmail, temporaryPassword }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/companies', async (req, res) => {
   try {
     const { name } = req.body;
@@ -1966,6 +2034,51 @@ app.post('/api-key/:companyId/regenerate', requireAuth, async (req, res) => {
     const { data, error } = await supabase.from('companies').update({ api_key: newKey }).eq('id', req.params.companyId).select('api_key').single();
     if (error) throw error;
     res.json({ success: true, apiKey: data.api_key });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- Şirkət-səviyyəli inteqrasiya açarlarını təyin etmək (hər müştərinin öz Google/Slack/HubSpot hesabı) ----
+app.post('/companies/:companyId/integrations', requireAuth, async (req, res) => {
+  try {
+    if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin inteqrasiyaları dəyişə bilər' });
+    if (req.employee.company_id !== req.params.companyId) return res.status(403).json({ error: 'Bu şirkətə girişiniz yoxdur' });
+
+    const { googleClientId, googleClientSecret, googleRefreshToken, slackBotToken, hubspotAccessToken } = req.body;
+    const updates = {};
+    if (googleClientId !== undefined) updates.google_client_id = googleClientId;
+    if (googleClientSecret !== undefined) updates.google_client_secret = googleClientSecret;
+    if (googleRefreshToken !== undefined) updates.google_refresh_token = googleRefreshToken;
+    if (slackBotToken !== undefined) updates.slack_bot_token = slackBotToken;
+    if (hubspotAccessToken !== undefined) updates.hubspot_access_token = hubspotAccessToken;
+
+    const { error } = await supabase.from('companies').update(updates).eq('id', req.params.companyId);
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Şirkətin hansı inteqrasiyaların QURULU olduğunu göstərir (real açar dəyərlərini AÇMADAN)
+app.get('/companies/:companyId/integrations', requireAuth, async (req, res) => {
+  try {
+    if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin görə bilər' });
+    if (req.employee.company_id !== req.params.companyId) return res.status(403).json({ error: 'Bu şirkətə girişiniz yoxdur' });
+
+    const { data, error } = await supabase
+      .from('companies')
+      .select('google_client_id, slack_bot_token, hubspot_access_token')
+      .eq('id', req.params.companyId)
+      .single();
+    if (error) throw error;
+
+    res.json({
+      google: !!data.google_client_id,
+      slack: !!data.slack_bot_token,
+      hubspot: !!data.hubspot_access_token
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
