@@ -1092,6 +1092,9 @@ app.post('/ingest', ingestLimiter, requireAuth, async (req, res) => {
     if (!companyId || !title) {
       return res.status(400).json({ error: 'companyId və title tələb olunur' });
     }
+    if (companyId !== req.employee.company_id) {
+      return res.status(403).json({ error: 'Yalnız öz şirkətiniz üçün sənəd yükləyə bilərsiniz' });
+    }
     if (!content && !fileBase64) {
       return res.status(400).json({ error: 'content və ya fileBase64 tələb olunur' });
     }
@@ -1169,8 +1172,11 @@ app.post('/ingest', ingestLimiter, requireAuth, async (req, res) => {
 
 // ---- Demo köməkçi endpoint-lər ----
 
-app.get('/employees', async (req, res) => {
-  const { data, error } = await supabase.from('employees').select('*, departments(name)');
+app.get('/employees', requireAuth, async (req, res) => {
+  const { data, error } = await supabase
+    .from('employees')
+    .select('*, departments(name)')
+    .eq('company_id', req.employee.company_id);
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
 });
@@ -1183,6 +1189,9 @@ app.post('/employees', requireAuth, async (req, res) => {
     const { companyId, departmentId, name, email, role } = req.body;
     if (!companyId || !name || !role || !email) {
       return res.status(400).json({ error: 'companyId, name, email və role tələb olunur' });
+    }
+    if (companyId !== req.employee.company_id) {
+      return res.status(403).json({ error: 'Yalnız öz şirkətiniz üçün işçi əlavə edə bilərsiniz' });
     }
 
     // Müvəqqəti parol yaradırıq — işçi ilk girişdən sonra "Parolu unutmuşam" ilə öz parolunu təyin edə bilər
@@ -1230,6 +1239,13 @@ app.post('/employees', requireAuth, async (req, res) => {
 app.put('/employees/:id', requireAuth, async (req, res) => {
   try {
     if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin işçi məlumatını dəyişə bilər' });
+
+    const { data: targetEmp } = await supabase.from('employees').select('company_id').eq('id', req.params.id).single();
+    if (!targetEmp) return res.status(404).json({ error: 'İşçi tapılmadı' });
+    if (targetEmp.company_id !== req.employee.company_id) {
+      return res.status(403).json({ error: 'Bu işçi sizin şirkətinizə aid deyil' });
+    }
+
     const { name, role, departmentId, status } = req.body;
     const updates = {};
     if (name) updates.name = name;
@@ -1254,6 +1270,13 @@ app.put('/employees/:id', requireAuth, async (req, res) => {
 app.delete('/employees/:id', requireAuth, async (req, res) => {
   try {
     if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin işçini deaktiv edə bilər' });
+
+    const { data: targetEmp } = await supabase.from('employees').select('company_id').eq('id', req.params.id).single();
+    if (!targetEmp) return res.status(404).json({ error: 'İşçi tapılmadı' });
+    if (targetEmp.company_id !== req.employee.company_id) {
+      return res.status(403).json({ error: 'Bu işçi sizin şirkətinizə aid deyil' });
+    }
+
     const { data, error } = await supabase
       .from('employees')
       .update({ status: 'inactive' })
@@ -1339,7 +1362,10 @@ app.post('/departments', async (req, res) => {
 });
 
 // Şirkətin departamentlərini siyahı kimi gətirmək (admin panel üçün)
-app.get('/departments/:companyId', async (req, res) => {
+app.get('/departments/:companyId', requireAuth, async (req, res) => {
+  if (req.employee.company_id !== req.params.companyId) {
+    return res.status(403).json({ error: 'Bu şirkətə girişiniz yoxdur' });
+  }
   const { data, error } = await supabase
     .from('departments')
     .select('id, name')
@@ -1350,7 +1376,10 @@ app.get('/departments/:companyId', async (req, res) => {
 });
 
 // Şirkət sənədləri
-app.get('/documents/:companyId', async (req, res) => {
+app.get('/documents/:companyId', requireAuth, async (req, res) => {
+  if (req.employee.company_id !== req.params.companyId) {
+    return res.status(403).json({ error: 'Bu şirkətin sənədlərinə girişiniz yoxdur' });
+  }
   const { data, error } = await supabase
     .from('documents')
     .select('id, title, doc_code, restricted_to_roles, uploaded_at, file_url')
@@ -1364,6 +1393,13 @@ app.get('/documents/:companyId', async (req, res) => {
 app.put('/documents/:id', requireAuth, async (req, res) => {
   try {
     if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin sənədi dəyişə bilər' });
+
+    const { data: targetDoc } = await supabase.from('documents').select('company_id').eq('id', req.params.id).single();
+    if (!targetDoc) return res.status(404).json({ error: 'Sənəd tapılmadı' });
+    if (targetDoc.company_id !== req.employee.company_id) {
+      return res.status(403).json({ error: 'Bu sənəd sizin şirkətinizə aid deyil' });
+    }
+
     const { title, docCode, restrictedRoles } = req.body;
     const updates = {};
     if (title) updates.title = title;
@@ -1387,6 +1423,13 @@ app.put('/documents/:id', requireAuth, async (req, res) => {
 app.put('/documents/:id/content', requireAuth, async (req, res) => {
   try {
     if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin sənədi dəyişə bilər' });
+
+    const { data: targetDoc } = await supabase.from('documents').select('company_id').eq('id', req.params.id).single();
+    if (!targetDoc) return res.status(404).json({ error: 'Sənəd tapılmadı' });
+    if (targetDoc.company_id !== req.employee.company_id) {
+      return res.status(403).json({ error: 'Bu sənəd sizin şirkətinizə aid deyil' });
+    }
+
     const { content } = req.body;
     if (!content) return res.status(400).json({ error: 'content tələb olunur' });
 
@@ -1412,6 +1455,12 @@ app.put('/documents/:id/content', requireAuth, async (req, res) => {
 // Sənədin cari tam mətnini gətirir (redaktə pəncərəsini doldurmaq üçün)
 app.get('/documents/:id/content', requireAuth, async (req, res) => {
   try {
+    const { data: targetDoc } = await supabase.from('documents').select('company_id').eq('id', req.params.id).single();
+    if (!targetDoc) return res.status(404).json({ error: 'Sənəd tapılmadı' });
+    if (targetDoc.company_id !== req.employee.company_id) {
+      return res.status(403).json({ error: 'Bu sənəd sizin şirkətinizə aid deyil' });
+    }
+
     const { data, error } = await supabase
       .from('document_chunks')
       .select('content')
@@ -1428,6 +1477,9 @@ app.get('/documents/:id/content', requireAuth, async (req, res) => {
 // Şablonların siyahısı (yalnız is_template=true olanlar)
 app.get('/documents/:companyId/templates', requireAuth, async (req, res) => {
   try {
+    if (req.employee.company_id !== req.params.companyId) {
+      return res.status(403).json({ error: 'Bu şirkətin şablonlarına girişiniz yoxdur' });
+    }
     const { data, error } = await supabase
       .from('documents')
       .select('id, title, doc_code')
@@ -1484,6 +1536,13 @@ app.post('/documents/from-template', requireAuth, async (req, res) => {
 app.delete('/documents/:id', requireAuth, async (req, res) => {
   try {
     if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin sənədi silə bilər' });
+
+    const { data: targetDoc } = await supabase.from('documents').select('company_id').eq('id', req.params.id).single();
+    if (!targetDoc) return res.status(404).json({ error: 'Sənəd tapılmadı' });
+    if (targetDoc.company_id !== req.employee.company_id) {
+      return res.status(403).json({ error: 'Bu sənəd sizin şirkətinizə aid deyil' });
+    }
+
     const { error } = await supabase.from('documents').delete().eq('id', req.params.id);
     if (error) throw error;
     res.json({ success: true, message: 'Sənəd və bütün parçaları silindi' });
@@ -1496,6 +1555,7 @@ app.delete('/documents/:id', requireAuth, async (req, res) => {
 app.get('/audit-log/:companyId', requireAuth, async (req, res) => {
   try {
     if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin audit logu görə bilər' });
+    if (req.employee.company_id !== req.params.companyId) return res.status(403).json({ error: 'Bu şirkətə girişiniz yoxdur' });
     const limit = parseInt(req.query.limit) || 50;
 
     const [{ data: chats, error: chatsError }, { data: actions, error: actionsError }] = await Promise.all([
@@ -1608,6 +1668,11 @@ app.post('/actions/:id/approve', requireAuth, async (req, res) => {
       .from('action_requests').select('*').eq('id', req.params.id).single();
     if (actionCheckError || !actionCheck) return res.status(404).json({ error: 'Sorğu tapılmadı' });
 
+    // KRİTİK TƏHLÜKƏSİZLİK YOXLAMASI: sorğu, təsdiqləyənin ÖZ şirkətinə aid olmalıdır (cross-tenant qorunma)
+    if (actionCheck.company_id !== approver.company_id) {
+      return res.status(403).json({ error: 'Bu sorğu sizin şirkətinizə aid deyil' });
+    }
+
     if (actionCheck.status !== 'pending') {
       return res.status(400).json({ error: 'Bu sorğu artıq həll olunub' });
     }
@@ -1686,8 +1751,13 @@ app.post('/actions/:id/reject', requireAuth, async (req, res) => {
     const approver = req.employee;
 
     const { data: actionCheck, error: actionCheckError } = await supabase
-      .from('action_requests').select('type, employee_id').eq('id', req.params.id).single();
+      .from('action_requests').select('type, employee_id, company_id').eq('id', req.params.id).single();
     if (actionCheckError || !actionCheck) return res.status(404).json({ error: 'Sorğu tapılmadı' });
+
+    // KRİTİK TƏHLÜKƏSİZLİK YOXLAMASI: sorğu, rədd edənin ÖZ şirkətinə aid olmalıdır (cross-tenant qorunma)
+    if (actionCheck.company_id !== approver.company_id) {
+      return res.status(403).json({ error: 'Bu sorğu sizin şirkətinizə aid deyil' });
+    }
 
     const allowed = await canManageAction(approver, actionCheck);
     if (!allowed) {
@@ -1720,6 +1790,7 @@ app.post('/actions/:id/reject', requireAuth, async (req, res) => {
 app.get('/pending-actions/:companyId', requireAuth, async (req, res) => {
   try {
     const viewer = req.employee;
+    if (viewer.company_id !== req.params.companyId) return res.status(403).json({ error: 'Bu şirkətə girişiniz yoxdur' });
     const today = new Date().toISOString().slice(0, 10);
 
     // Bu istifadəçinin aktiv delegation-ları (müvəqqəti səlahiyyətləri) var mı?
@@ -1808,6 +1879,7 @@ app.post('/notifications/:id/read', requireAuth, async (req, res) => {
 // Şirkət üçün ümumi statistika — Admin Dashboard-un əsası
 app.get('/dashboard/:companyId', requireAuth, async (req, res) => {  try {
     if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin dashboard-u görə bilər' });
+    if (req.employee.company_id !== req.params.companyId) return res.status(403).json({ error: 'Bu şirkətə girişiniz yoxdur' });
     const companyId = req.params.companyId;
 
     const [
@@ -1845,6 +1917,11 @@ app.post('/delegations', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'departmentName "IT", "HR" və ya "Finance" olmalıdır' });
     }
 
+    const { data: targetDelegate } = await supabase.from('employees').select('company_id').eq('id', delegateId).single();
+    if (!targetDelegate || targetDelegate.company_id !== req.employee.company_id) {
+      return res.status(403).json({ error: 'Yalnız öz şirkətinizin işçisinə delegation verə bilərsiniz' });
+    }
+
     const { data, error } = await supabase
       .from('approval_delegations')
       .insert({
@@ -1872,6 +1949,7 @@ app.post('/delegations', requireAuth, async (req, res) => {
 app.get('/api-key/:companyId', requireAuth, async (req, res) => {
   try {
     if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin API açarını görə bilər' });
+    if (req.employee.company_id !== req.params.companyId) return res.status(403).json({ error: 'Bu şirkətə girişiniz yoxdur' });
     const { data, error } = await supabase.from('companies').select('api_key').eq('id', req.params.companyId).single();
     if (error) throw error;
     res.json({ apiKey: data.api_key });
@@ -1883,6 +1961,7 @@ app.get('/api-key/:companyId', requireAuth, async (req, res) => {
 app.post('/api-key/:companyId/regenerate', requireAuth, async (req, res) => {
   try {
     if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin API açarını yeniləyə bilər' });
+    if (req.employee.company_id !== req.params.companyId) return res.status(403).json({ error: 'Bu şirkətə girişiniz yoxdur' });
     const newKey = crypto.randomBytes(24).toString('hex');
     const { data, error } = await supabase.from('companies').update({ api_key: newKey }).eq('id', req.params.companyId).select('api_key').single();
     if (error) throw error;
@@ -1895,6 +1974,7 @@ app.post('/api-key/:companyId/regenerate', requireAuth, async (req, res) => {
 app.get('/delegations/:companyId', requireAuth, async (req, res) => {
   try {
     if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin görə bilər' });
+    if (req.employee.company_id !== req.params.companyId) return res.status(403).json({ error: 'Bu şirkətə girişiniz yoxdur' });
     const { data, error } = await supabase
       .from('approval_delegations')
       .select('*, employees!delegate_id(name, role)')
@@ -1910,6 +1990,13 @@ app.get('/delegations/:companyId', requireAuth, async (req, res) => {
 app.delete('/delegations/:id', requireAuth, async (req, res) => {
   try {
     if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin silə bilər' });
+
+    const { data: targetDel } = await supabase.from('approval_delegations').select('company_id').eq('id', req.params.id).single();
+    if (!targetDel) return res.status(404).json({ error: 'Delegation tapılmadı' });
+    if (targetDel.company_id !== req.employee.company_id) {
+      return res.status(403).json({ error: 'Bu delegation sizin şirkətinizə aid deyil' });
+    }
+
     const { error } = await supabase.from('approval_delegations').delete().eq('id', req.params.id);
     if (error) throw error;
     res.json({ success: true });
@@ -1921,6 +2008,7 @@ app.delete('/delegations/:id', requireAuth, async (req, res) => {
 app.get('/analytics/:companyId', requireAuth, async (req, res) => {
   try {
     if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin analitikanı görə bilər' });
+    if (req.employee.company_id !== req.params.companyId) return res.status(403).json({ error: 'Bu şirkətə girişiniz yoxdur' });
     const companyId = req.params.companyId;
 
     // 1) Top Questions — ən çox təkrarlanan (eyni mətnli) suallar
