@@ -218,14 +218,73 @@ async function callVuseraRouter(action, payload, retriesLeft = 2) {
   }
 }
 
-async function readRecentEmails() {
-  const data = await callVuseraRouter('read_emails', {});
-  return data?.emails || [];
+// ---- Birbaşa Gmail API (Make.com-un limit/pause problemini keçmək üçün) ----
+async function getGmailClient(companyId) {
+  const creds = await getCompanyIntegrationCreds(companyId);
+  const clientId = creds.google_client_id || process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = creds.google_client_secret || process.env.GOOGLE_CLIENT_SECRET;
+  const refreshToken = creds.google_refresh_token || process.env.GOOGLE_REFRESH_TOKEN;
+  if (!clientId) return null;
+  const oauth2Client = new google.auth.OAuth2(clientId, clientSecret);
+  oauth2Client.setCredentials({ refresh_token: refreshToken });
+  return google.gmail({ version: 'v1', auth: oauth2Client });
 }
 
-async function sendEmailViaMake(to, subject, body) {
-  const data = await callVuseraRouter('send_email', { to, subject, body });
-  return { success: data?.success === true };
+async function readRecentEmailsDirect(companyId) {
+  const gmail = await getGmailClient(companyId);
+  if (!gmail) return [];
+  try {
+    const listRes = await gmail.users.messages.list({ userId: 'me', maxResults: 10, labelIds: ['INBOX'] });
+    const messages = listRes.data.messages || [];
+    const emails = [];
+    for (const m of messages) {
+      const msg = await gmail.users.messages.get({ userId: 'me', id: m.id, format: 'metadata', metadataHeaders: ['From', 'Subject'] });
+      const headers = msg.data.payload?.headers || [];
+      const fromHeader = headers.find(h => h.name === 'From')?.value || '';
+      const subjectHeader = headers.find(h => h.name === 'Subject')?.value || '';
+      const fromNameMatch = fromHeader.match(/^"?([^"<]+)"?\s*</);
+      emails.push({
+        fromName: fromNameMatch ? fromNameMatch[1].trim() : fromHeader,
+        fromEmail: (fromHeader.match(/<(.+)>/) || [, fromHeader])[1],
+        subject: subjectHeader,
+        snippet: msg.data.snippet || ''
+      });
+    }
+    return emails;
+  } catch (e) {
+    console.error('Gmail (birbaşa) oxuma xətası:', e.message);
+    return [];
+  }
+}
+
+async function sendEmailDirect(companyId, to, subject, body) {
+  const gmail = await getGmailClient(companyId);
+  if (!gmail) return { success: false, error: 'Gmail inteqrasiyası qurulmayıb' };
+  try {
+    const messageParts = [
+      `To: ${to}`,
+      'Content-Type: text/html; charset=utf-8',
+      'MIME-Version: 1.0',
+      `Subject: ${subject}`,
+      '',
+      body
+    ];
+    const message = messageParts.join('\n');
+    const encodedMessage = Buffer.from(message).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    await gmail.users.messages.send({ userId: 'me', requestBody: { raw: encodedMessage } });
+    return { success: true };
+  } catch (e) {
+    console.error('Gmail (birbaşa) göndərmə xətası:', e.message);
+    return { success: false, error: e.message };
+  }
+}
+
+async function readRecentEmails(companyId) {
+  return await readRecentEmailsDirect(companyId);
+}
+
+async function sendEmailViaMake(companyId, to, subject, body) {
+  return await sendEmailDirect(companyId, to, subject, body);
 }
 
 async function checkCalendarAvailability(timeMin, timeMax) {
@@ -488,6 +547,20 @@ app.post('/ask', askLimiter, requireAuth, async (req, res) => {
       .single();
     if (empError || !employee) return res.status(404).json({ error: 'İşçi tapılmadı' });
 
+    // 1.5) Şirkətin abunəlik statusunu yoxla — gecikmiş/ləğv edilmiş hesablar üçün girişi məhdudlaşdır
+    const { data: companyStatus } = await supabase
+      .from('companies')
+      .select('subscription_status')
+      .eq('id', employee.company_id)
+      .single();
+    if (companyStatus && (companyStatus.subscription_status === 'cancelled' || companyStatus.subscription_status === 'past_due')) {
+      return res.status(402).json({
+        error: companyStatus.subscription_status === 'cancelled'
+          ? 'Abunəlik ləğv edilib. Davam etmək üçün VUSERA ilə əlaqə saxlayın.'
+          : 'Ödəniş gecikib. Xidmətə davam etmək üçün ödənişi tamamlayın.'
+      });
+    }
+
     // 2) Sualın embedding-ini yarat
     let queryEmbedding;
     try {
@@ -555,7 +628,7 @@ app.post('/ask', askLimiter, requireAuth, async (req, res) => {
     // 3.7) Əgər sual email haqqındadırsa, real inbox-u oxu
     let emailsText = '';
     if (isEmailRelated(question)) {
-      const emails = await readRecentEmails();
+      const emails = await readRecentEmails(employee.company_id);
       emailsText = emails.length > 0
         ? emails.map((e, i) => `${i + 1}. "${e.subject}" — ${e.fromName} (${e.fromEmail})\n   ${e.snippet}`).join('\n\n')
         : '(inbox oxunmadı və ya boşdur)';
@@ -708,7 +781,7 @@ QAYDALAR:
 
           if (actionData.type === 'send_email') {
             // Email göndərmə - approval axınına yox, birbaşa Make.com-a gedir
-            const emailResult = await sendEmailViaMake(actionData.to, actionData.subject, actionData.detail || actionData.body || '');
+            const emailResult = await sendEmailViaMake(employee.company_id, actionData.to, actionData.subject, actionData.detail || actionData.body || '');
             createdAction = {
               id: 'email-' + Date.now(),
               type: 'send_email',
@@ -975,7 +1048,7 @@ QAYDALAR:
               .eq('email', actionData.notifyEmail)
               .maybeSingle();
             if (notifyMatch) {
-              await sendEmailViaMake(actionData.notifyEmail, `Yeni bildiriş: ${createdAction.title}`, actionData.notifyNote || createdAction.detail || '');
+              await sendEmailViaMake(employee.company_id, actionData.notifyEmail, `Yeni bildiriş: ${createdAction.title}`, actionData.notifyNote || createdAction.detail || '');
               createdAction.detail = (createdAction.detail || '') + ` · ${actionData.notifyEmail}-ə də bildirildi`;
             }
           }
@@ -1045,7 +1118,7 @@ QAYDALAR:
 // Email paneli üçün — birbaşa inbox-u gətirir (chat axınından kənar)
 app.get('/emails', requireAuth, async (req, res) => {
   try {
-    const emails = await readRecentEmails();
+    const emails = await readRecentEmails(req.employee.company_id);
     res.json({ emails });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1067,7 +1140,7 @@ app.post('/emails/send', requireAuth, async (req, res) => {
       .maybeSingle();
     if (!match) return res.status(400).json({ error: 'Bu email ünvanı şirkət direktoriyasında tapılmadı' });
 
-    const result = await sendEmailViaMake(to, subject, body);
+    const result = await sendEmailViaMake(req.employee.company_id, to, subject, body);
     res.json({ success: result.success });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1247,6 +1320,7 @@ app.post('/employees', requireAuth, async (req, res) => {
     // ---- ONBOARDING WORKFLOW — avtomatik addımlar ----
     // 1) Yeni işçiyə xoş gəldin email-i (giriş məlumatları ilə)
     sendEmailViaMake(
+      companyId,
       email,
       `VUSERA-ya xoş gəldiniz, ${name}!`,
       `Salam ${name},\n\nNovaTech Solutions-a xoş gəldiniz! VUSERA Employee Copilot hesabınız hazırdır.\n\nGiriş məlumatlarınız:\nEmail: ${email}\nMüvəqqəti parol: ${tempPassword}\n\nİlk girişdən sonra parolunuzu dəyişməyiniz tövsiyə olunur.\n\nUğurlar!\nVUSERA`
@@ -2403,6 +2477,50 @@ app.get('/internal/cost-tracking', async (req, res) => {
     const totalCostUSD = result.reduce((sum, c) => sum + parseFloat(c.estimatedCostUSD), 0).toFixed(2);
 
     res.json({ byCompany: result, totalCostUSD });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- YALNIZ VUSERA SAHIBI ÜÇÜN — Subscription (abunəlik) idarəetməsi ----
+app.get('/internal/subscriptions', async (req, res) => {
+  const provided = req.headers['x-api-secret'];
+  if (!process.env.API_SECRET || provided !== process.env.API_SECRET) {
+    return res.status(403).json({ error: 'İcazə yoxdur' });
+  }
+  try {
+    const { data, error } = await supabase
+      .from('companies')
+      .select('id, name, subscription_status, plan_name, monthly_amount, next_billing_date')
+      .order('name');
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/internal/subscriptions/:companyId', async (req, res) => {
+  const provided = req.headers['x-api-secret'];
+  if (!process.env.API_SECRET || provided !== process.env.API_SECRET) {
+    return res.status(403).json({ error: 'İcazə yoxdur' });
+  }
+  try {
+    const { subscriptionStatus, planName, monthlyAmount, nextBillingDate } = req.body;
+    const updates = {};
+    if (subscriptionStatus) updates.subscription_status = subscriptionStatus;
+    if (planName) updates.plan_name = planName;
+    if (monthlyAmount !== undefined) updates.monthly_amount = monthlyAmount;
+    if (nextBillingDate) updates.next_billing_date = nextBillingDate;
+
+    const { data, error } = await supabase
+      .from('companies')
+      .update(updates)
+      .eq('id', req.params.companyId)
+      .select()
+      .single();
+    if (error) throw error;
+    res.json({ success: true, company: data });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
