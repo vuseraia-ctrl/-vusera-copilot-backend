@@ -548,16 +548,20 @@ app.post('/ask', askLimiter, requireAuth, async (req, res) => {
     if (empError || !employee) return res.status(404).json({ error: 'İşçi tapılmadı' });
 
     // 1.5) Şirkətin abunəlik statusunu yoxla — gecikmiş/ləğv edilmiş hesablar üçün girişi məhdudlaşdır
+    // ETİK QAYDA: yalnız Admin real səbəbi (ödəniş) görür, adi işçilərə maliyyə statusu açıqlanmır
     const { data: companyStatus } = await supabase
       .from('companies')
       .select('subscription_status')
       .eq('id', employee.company_id)
       .single();
     if (companyStatus && (companyStatus.subscription_status === 'cancelled' || companyStatus.subscription_status === 'past_due')) {
+      const isAdminViewer = employee.role === 'Admin';
       return res.status(402).json({
-        error: companyStatus.subscription_status === 'cancelled'
-          ? 'Abunəlik ləğv edilib. Davam etmək üçün VUSERA ilə əlaqə saxlayın.'
-          : 'Ödəniş gecikib. Xidmətə davam etmək üçün ödənişi tamamlayın.'
+        error: isAdminViewer
+          ? (companyStatus.subscription_status === 'cancelled'
+              ? 'Abunəlik ləğv edilib. Davam etmək üçün VUSERA ilə əlaqə saxlayın.'
+              : 'Ödəniş gecikib. Xidmətə davam etmək üçün ödənişi tamamlayın.')
+          : 'VUSERA hazırda müvəqqəti əlçatan deyil. Zəhmət olmasa Admin ilə əlaqə saxlayın.'
       });
     }
 
