@@ -990,13 +990,15 @@ QAYDALAR:
       answerText = answerText.replace(/SUGGESTION:\s*.+$/m, '').trim();
     }
 
-    // 7) Söhbəti logla (analitika/dashboard üçün)
+    // 7) Söhbəti logla (analitika/dashboard üçün) — token istifadəsi də (yalnız VUSERA-nın öz maliyyə izləməsi üçün) saxlanılır
     await supabase.from('chat_logs').insert({
       company_id: employee.company_id,
       employee_id: employee.id,
       question,
       answer: answerText,
-      source_type: sourceType
+      source_type: sourceType,
+      input_tokens: message.usage?.input_tokens || 0,
+      output_tokens: message.usage?.output_tokens || 0
     });
 
     res.json({ answer: answerText, employee: employee.name, role: employee.role, action: createdAction, suggestion });
@@ -2344,6 +2346,41 @@ app.post('/proactive/check-reminders', async (req, res) => {
 });
 
 // Naməlum yol (route) üçün aydın xəta — DİQQƏT: bu, həmişə BÜTÜN route-lardan SONRA olmalıdır!
+// ---- YALNIZ VUSERA SAHIBI ÜÇÜN — AI istifadə xərci izləməsi (heç bir müştəri Admin-i bunu görə bilməz) ----
+// Bu endpoint adi işçi girişi (requireAuth) ilə DEYİL, birbaşa API_SECRET ilə qorunur.
+app.get('/internal/cost-tracking', async (req, res) => {
+  const provided = req.headers['x-api-secret'];
+  if (!process.env.API_SECRET || provided !== process.env.API_SECRET) {
+    return res.status(403).json({ error: 'İcazə yoxdur' });
+  }
+  try {
+    const { data: logs } = await supabase
+      .from('chat_logs')
+      .select('company_id, input_tokens, output_tokens, companies(name)');
+
+    // Claude Sonnet qiymətləri: $3/milyon input token, $15/milyon output token (təxmini)
+    const byCompany = {};
+    for (const log of logs || []) {
+      const cid = log.company_id;
+      if (!byCompany[cid]) byCompany[cid] = { companyName: log.companies?.name || 'Naməlum', inputTokens: 0, outputTokens: 0, conversationCount: 0 };
+      byCompany[cid].inputTokens += log.input_tokens || 0;
+      byCompany[cid].outputTokens += log.output_tokens || 0;
+      byCompany[cid].conversationCount += 1;
+    }
+
+    const result = Object.values(byCompany).map(c => ({
+      ...c,
+      estimatedCostUSD: ((c.inputTokens / 1000000) * 3 + (c.outputTokens / 1000000) * 15).toFixed(4)
+    }));
+
+    const totalCostUSD = result.reduce((sum, c) => sum + parseFloat(c.estimatedCostUSD), 0).toFixed(2);
+
+    res.json({ byCompany: result, totalCostUSD });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.use((req, res) => {
   res.status(404).json({ error: 'Bu ünvan tapılmadı' });
 });
