@@ -680,6 +680,32 @@ QAYDALAR:
           sourceType = 'action';
           if (!answerText) answerText = 'Sorğunuz emal edilir...'; // Claude yalnız ACTION yazıbsa, boş qalmasın
 
+          // ---- IDEMPOTENCY YOXLAMASI — eyni əməliyyatın təsadüfən 2 dəfə icra olunmasının qarşısını alır ----
+          const fingerprint = crypto.createHash('sha256')
+            .update(`${employee.id}:${actionData.type}:${actionData.title || ''}:${JSON.stringify(actionData)}`)
+            .digest('hex');
+          const sixtySecondsAgo = new Date(Date.now() - 60 * 1000).toISOString();
+          const { data: existingFingerprint } = await supabase
+            .from('action_fingerprints')
+            .select('id')
+            .eq('fingerprint', fingerprint)
+            .eq('employee_id', employee.id)
+            .gte('created_at', sixtySecondsAgo)
+            .maybeSingle();
+
+          if (existingFingerprint) {
+            // Bu, artıq son 60 saniyədə icra olunub — TƏKRAR ETMƏ, sadəcə xəbər ver
+            createdAction = {
+              id: 'duplicate-' + Date.now(),
+              type: actionData.type,
+              title: 'Bu əməliyyat artıq icra olunub',
+              detail: 'Təkrar sorğunun qarşısı alındı (son 60 saniyə ərzində eyni əməliyyat aşkarlandı).',
+              status: 'duplicate_prevented'
+            };
+          } else {
+            // Barmaq izini qeydə al ki, təkrarını tanıya bilək
+            await supabase.from('action_fingerprints').insert({ fingerprint, employee_id: employee.id });
+
           if (actionData.type === 'send_email') {
             // Email göndərmə - approval axınına yox, birbaşa Make.com-a gedir
             const emailResult = await sendEmailViaMake(actionData.to, actionData.subject, actionData.detail || actionData.body || '');
@@ -938,9 +964,10 @@ QAYDALAR:
             }
           }
           } // send_email deyilsə bloku bağlanır
+          } // idempotency: duplikat deyilsə bloku bağlanır
 
           // ÇOX-ADDIMLI TAPŞIRIQ: əsas əməliyyatdan sonra, istəyə bağlı əlavə email addımı
-          if (actionData.notifyEmail && createdAction && createdAction.status !== 'failed') {
+          if (actionData.notifyEmail && createdAction && createdAction.status !== 'failed' && createdAction.status !== 'duplicate_prevented') {
             const { data: notifyMatch } = await supabase
               .from('employees')
               .select('id')
@@ -964,7 +991,7 @@ QAYDALAR:
           const wantsSlack = /slack/i.test(fullConversationText);
           const finalSlackChannel = actionData.notifySlackChannel || (wantsSlack && slackChannelFromQuestion ? `#${slackChannelFromQuestion[1]}` : null);
 
-          if (finalSlackChannel && createdAction && createdAction.status !== 'failed') {
+          if (finalSlackChannel && createdAction && createdAction.status !== 'failed' && createdAction.status !== 'duplicate_prevented') {
             const slackResult = await sendSlackMessage(employee.company_id, finalSlackChannel, actionData.notifySlackNote || `${createdAction.title}: ${createdAction.detail || ''}`);
             if (slackResult.success) {
               createdAction.detail = (createdAction.detail || '') + ` · Slack-ə (${finalSlackChannel}) bildirildi`;
