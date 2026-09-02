@@ -584,6 +584,29 @@ app.post('/ask', askLimiter, requireAuth, async (req, res) => {
     });
     if (matchError) throw matchError;
 
+    // 3.2) BAŞLIQ-ƏSASLI TƏMİNAT: əgər sual, mövcud bir sənədin adını (demək olar) birbaşa ehtiva edirsə,
+    // amma semantik axtarış onu tapmayıbsa, o sənədi əl ilə əlavə edirik (embedding zəifliyinin qarşısını almaq üçün)
+    const { data: allDocTitles } = await supabase
+      .from('documents')
+      .select('id, title')
+      .eq('company_id', employee.company_id);
+    const titleMentioned = (allDocTitles || []).find(d =>
+      d.title.length > 4 && question.toLowerCase().includes(d.title.toLowerCase())
+    );
+    let finalMatches = matches || [];
+    if (titleMentioned && !finalMatches.some(m => m.document_id === titleMentioned.id)) {
+      const { data: extraChunks } = await supabase
+        .from('document_chunks')
+        .select('id, document_id, section_label, content, documents!inner(title, doc_code, restricted_to_roles)')
+        .eq('document_id', titleMentioned.id);
+      const mapped = (extraChunks || []).map(c => ({
+        chunk_id: c.id, document_id: c.document_id, document_title: c.documents.title,
+        doc_code: c.documents.doc_code, restricted_to_roles: c.documents.restricted_to_roles,
+        section_label: c.section_label, content: c.content, similarity: 1
+      }));
+      finalMatches = [...mapped, ...finalMatches];
+    }
+
     // 3.5) Söhbət yaddaşı — bu işçinin son 6 mesajını gətir ki, Claude
     // əvvəlki sualları "xatırlaya" bilsin (məs: "bəs həftədə neçə gün?")
     const { data: history } = await supabase
@@ -650,7 +673,7 @@ app.post('/ask', askLimiter, requireAuth, async (req, res) => {
       .join('\n');
 
     // 4) İcazə süzgəcindən keçir — işçinin görə bilmədiyi sənədləri çıxar
-    const allowedChunks = filterByPermission(matches || [], employee.role);
+    const allowedChunks = filterByPermission(finalMatches, employee.role);
 
     // Əgər tapılan parçalar arasında məhdud (restricted) bir sənəd varsa,
     // amma işçinin buna icazəsi yoxdursa — bu, "tapılmadı" yox, "icazə yoxdur" deməkdir.
