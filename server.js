@@ -422,14 +422,14 @@ app.post('/auth/login', async (req, res) => {
 
     const { data: employee, error: empError } = await supabase
       .from('employees')
-      .select('*, departments(name)')
+      .select('*, departments(name), companies(name)')
       .eq('auth_user_id', data.user.id)
       .single();
     if (empError || !employee) return res.status(404).json({ error: 'Bu istifadəçiyə bağlı işçi tapılmadı' });
 
     res.json({
       token: data.session.access_token,
-      employee: { id: employee.id, name: employee.name, role: employee.role, department: employee.departments?.name }
+      employee: { id: employee.id, name: employee.name, role: employee.role, department: employee.departments?.name, companyName: employee.companies?.name, company_id: employee.company_id }
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -465,7 +465,8 @@ async function requireAuth(req, res, next) {
 
 // İstifadəçi kimliyini (əvvəlcədən saxlanılan tokenlə) yoxlamaq üçün
 app.get('/auth/me', requireAuth, async (req, res) => {
-  res.json({ employee: { id: req.employee.id, name: req.employee.name, role: req.employee.role, department: req.employee.departments?.name } });
+  const { data: companyData } = await supabase.from('companies').select('name').eq('id', req.employee.company_id).single();
+  res.json({ employee: { id: req.employee.id, name: req.employee.name, role: req.employee.role, department: req.employee.departments?.name, companyName: companyData?.name, company_id: req.employee.company_id } });
 });
 
 // Verilənlər bazasında in-app bildiriş yaradır (fire-and-forget — uğursuz olsa əsas əməliyyatı pozmasın)
