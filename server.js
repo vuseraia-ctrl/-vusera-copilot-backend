@@ -1052,6 +1052,24 @@ ${isPremiumCompany ? `   ƏLAVƏ (Yaddaş — PREMIUM): Əgər istifadəçi "bun
             detailedStateFields = { detailed_state: 'WAITING_APPROVAL', retry_count: 0 };
           }
 
+          // PREMIUM: Maliyyə Anomaliya Aşkarlanması — bu işçinin orta xərcindən qeyri-adi yüksək məbləğ
+          let anomalyNote = '';
+          if (planCheck?.plan_name === 'Premium' && actionData.type === 'expense_request' && amountValue) {
+            const { data: pastExpenses } = await supabase
+              .from('action_requests')
+              .select('amount')
+              .eq('employee_id', employee.id)
+              .eq('type', 'expense_request')
+              .not('amount', 'is', null)
+              .limit(20);
+            if (pastExpenses && pastExpenses.length >= 3) {
+              const avg = pastExpenses.reduce((s, e) => s + parseFloat(e.amount), 0) / pastExpenses.length;
+              if (amountValue > avg * 3) {
+                anomalyNote = ` ⚠️ ANOMALİYA: bu məbləğ (${amountValue} AZN), ${employee.name}-in orta xərcindən (${avg.toFixed(0)} AZN) 3 dəfədən çoxdur.`;
+              }
+            }
+          }
+
           const { data: savedAction, error: actionError } = await supabase
             .from('action_requests')
             .insert({
@@ -1105,7 +1123,7 @@ ${isPremiumCompany ? `   ƏLAVƏ (Yaddaş — PREMIUM): Əgər istifadəçi "bun
 
             for (const m of toNotify) {
               createNotification(employee.company_id, m.id,
-                `${employee.name} yeni bir ${actionData.type} yaratdı: "${actionData.title}"`, savedAction.id);
+                `${employee.name} yeni bir ${actionData.type} yaratdı: "${actionData.title}"${anomalyNote}`, savedAction.id);
             }
           }
           } // send_email deyilsə bloku bağlanır
