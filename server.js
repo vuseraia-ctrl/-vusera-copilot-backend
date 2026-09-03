@@ -454,11 +454,28 @@ async function requireAuth(req, res, next) {
     const { data: userData, error: userError } = await supabaseAuth.auth.getUser(token);
     if (userError || !userData?.user) return res.status(401).json({ error: 'Token etibarsızdır və ya vaxtı bitib' });
 
-    const { data: employee, error: empError } = await supabase
+    let { data: employee, error: empError } = await supabase
       .from('employees')
       .select('*, departments(name)')
       .eq('auth_user_id', userData.user.id)
       .single();
+
+    // PREMIUM SSO: əgər auth_user_id ilə tapılmadısa (məs: ilk dəfə Google SSO ilə daxil olur),
+    // email ilə uyğunlaşdırmağa cəhd et — YALNIZ Premium şirkətlərdə, bir dəfəlik "bağlama" et
+    if ((empError || !employee) && userData.user.email) {
+      const { data: emailMatch } = await supabase
+        .from('employees')
+        .select('*, departments(name), companies(plan_name)')
+        .eq('email', userData.user.email)
+        .is('auth_user_id', null)
+        .maybeSingle();
+      if (emailMatch && emailMatch.companies?.plan_name === 'Premium') {
+        await supabase.from('employees').update({ auth_user_id: userData.user.id }).eq('id', emailMatch.id);
+        employee = emailMatch;
+        empError = null;
+      }
+    }
+
     if (empError || !employee) return res.status(404).json({ error: 'İstifadəçiyə bağlı işçi tapılmadı' });
 
     req.employee = employee;
