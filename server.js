@@ -2641,6 +2641,56 @@ app.post('/premium/daily-briefing/:companyId', async (req, res) => {
   }
 });
 
+// ---- PREMIUM XÜSUSİYYƏTİ: Webhook/API Trigger ----
+// Xarici sistemlər (monitorinq alətləri, xarici formlar və s.), şirkətin öz API açarı ilə,
+// birbaşa VUSERA-da sorğu yarada bilər — chat interfeysindən kənar.
+app.post('/webhook/trigger/:companyId', async (req, res) => {
+  try {
+    const apiKey = req.headers['x-webhook-key'];
+    if (!apiKey) return res.status(401).json({ error: 'x-webhook-key başlığı tələb olunur' });
+
+    const { data: company } = await supabase
+      .from('companies')
+      .select('id, plan_name, api_key')
+      .eq('id', req.params.companyId)
+      .single();
+    if (!company) return res.status(404).json({ error: 'Şirkət tapılmadı' });
+    if (company.api_key !== apiKey) return res.status(403).json({ error: 'API açarı yanlışdır' });
+    if (company.plan_name !== 'Premium') {
+      return res.status(403).json({ error: 'Webhook trigger yalnız Premium planlı şirkətlər üçündür' });
+    }
+
+    const { type, title, detail, priority } = req.body;
+    if (!type || !title) return res.status(400).json({ error: 'type və title tələb olunur' });
+    if (!['it_ticket', 'leave_request', 'expense_request'].includes(type)) {
+      return res.status(400).json({ error: 'type "it_ticket", "leave_request" və ya "expense_request" olmalıdır' });
+    }
+
+    // Webhook-la yaradılan sorğu, ilk Admin-ə mənsub edilir (webhook-un "işçisi" yoxdur)
+    const { data: admin } = await supabase.from('employees').select('id').eq('company_id', company.id).eq('role', 'Admin').limit(1).single();
+    if (!admin) return res.status(400).json({ error: 'Şirkətdə Admin tapılmadı' });
+
+    const { data: created, error } = await supabase
+      .from('action_requests')
+      .insert({
+        company_id: company.id,
+        employee_id: admin.id,
+        type, title, detail: detail || '',
+        priority: priority || 'normal',
+        status: 'pending',
+        detailed_state: 'WAITING_APPROVAL',
+        retry_count: 0
+      })
+      .select()
+      .single();
+    if (error) throw error;
+
+    res.json({ success: true, requestId: created.id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/internal/subscriptions', async (req, res) => {
   const provided = req.headers['x-api-secret'];
   if (!process.env.API_SECRET || provided !== process.env.API_SECRET) {
