@@ -2518,7 +2518,7 @@ app.post('/proactive/check-reminders', async (req, res) => {
     let unansweredEmailAlertsSent = 0;
     const { data: premiumCompanies } = await supabase
       .from('companies')
-      .select('id')
+      .select('id, name, last_briefing_sent_at')
       .eq('plan_name', 'Premium');
 
     for (const company of (premiumCompanies || [])) {
@@ -2541,7 +2541,41 @@ app.post('/proactive/check-reminders', async (req, res) => {
       }
     }
 
-    res.json({ success: true, remindersSent, meetingRemindersSent, escalatedCount, followUpsSent, unansweredEmailAlertsSent });
+    // ---- PREMIUM XÜSUSİYYƏTİ: Avtomatik Gündəlik Brifinq (gündə YALNIZ 1 dəfə göndərilir) ----
+    let dailyBriefingsSent = 0;
+    const todayDateStr = new Date().toISOString().slice(0, 10);
+    for (const company of (premiumCompanies || [])) {
+      if (company.last_briefing_sent_at === todayDateStr) continue; // bu gün artıq göndərilib
+
+      let briefingMessages = [{ role: 'user', content: `${company.name} şirkəti üçün bu günün qısa idarəetmə brifinqini hazırla. Lazım olan alətləri istifadə et.` }];
+      let briefingText = '';
+      for (let turn = 0; turn < 5; turn++) {
+        const response = await anthropic.messages.create({
+          model: 'claude-sonnet-4-5', max_tokens: 1024, tools: briefingTools, messages: briefingMessages
+        });
+        const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
+        briefingText = response.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+        if (toolUseBlocks.length === 0) break;
+        briefingMessages.push({ role: 'assistant', content: response.content });
+        const toolResults = [];
+        for (const tb of toolUseBlocks) {
+          const result = await executeBriefingTool(tb.name, company.id);
+          toolResults.push({ type: 'tool_result', tool_use_id: tb.id, content: JSON.stringify(result) });
+        }
+        briefingMessages.push({ role: 'user', content: toolResults });
+      }
+
+      if (briefingText) {
+        const { data: admins } = await supabase.from('employees').select('id').eq('company_id', company.id).eq('role', 'Admin');
+        for (const admin of (admins || [])) {
+          await createNotification(company.id, admin.id, `☀️ Gündəlik Brifinq: ${briefingText}`, null);
+        }
+        await supabase.from('companies').update({ last_briefing_sent_at: todayDateStr }).eq('id', company.id);
+        dailyBriefingsSent++;
+      }
+    }
+
+    res.json({ success: true, remindersSent, meetingRemindersSent, escalatedCount, followUpsSent, unansweredEmailAlertsSent, dailyBriefingsSent });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
