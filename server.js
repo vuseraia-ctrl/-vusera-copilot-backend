@@ -230,7 +230,7 @@ async function getGmailClient(companyId) {
   return google.gmail({ version: 'v1', auth: oauth2Client });
 }
 
-async function readRecentEmailsDirect(companyId) {
+async function readRecentEmailsDirect(companyId, includeMeta = false) {
   const gmail = await getGmailClient(companyId);
   if (!gmail) return [];
   try {
@@ -243,12 +243,17 @@ async function readRecentEmailsDirect(companyId) {
       const fromHeader = headers.find(h => h.name === 'From')?.value || '';
       const subjectHeader = headers.find(h => h.name === 'Subject')?.value || '';
       const fromNameMatch = fromHeader.match(/^"?([^"<]+)"?\s*</);
-      emails.push({
+      const emailObj = {
         fromName: fromNameMatch ? fromNameMatch[1].trim() : fromHeader,
         fromEmail: (fromHeader.match(/<(.+)>/) || [, fromHeader])[1],
         subject: subjectHeader,
         snippet: msg.data.snippet || ''
-      });
+      };
+      if (includeMeta) {
+        emailObj.isUnread = (msg.data.labelIds || []).includes('UNREAD');
+        emailObj.internalDate = msg.data.internalDate; // ms-epoch string
+      }
+      emails.push(emailObj);
     }
     return emails;
   } catch (e) {
@@ -1009,6 +1014,13 @@ QAYDALAR:
           const amountValue = actionData.amount ? parseFloat(actionData.amount) : null;
           const requiredApprovals = (actionData.type === 'expense_request' && amountValue && amountValue > 2000) ? 2 : 1;
 
+          // PREMIUM: bu şirkət Premium plandadırsa, detallı task state-i də izləyirik
+          let detailedStateFields = {};
+          const { data: planCheck } = await supabase.from('companies').select('plan_name').eq('id', employee.company_id).single();
+          if (planCheck?.plan_name === 'Premium') {
+            detailedStateFields = { detailed_state: 'WAITING_APPROVAL', retry_count: 0 };
+          }
+
           const { data: savedAction, error: actionError } = await supabase
             .from('action_requests')
             .insert({
@@ -1023,7 +1035,8 @@ QAYDALAR:
               end_date: actionData.end_date || null,
               amount: amountValue,
               required_approvals: requiredApprovals,
-              status: 'pending'
+              status: 'pending',
+              ...detailedStateFields
             })
             .select()
             .single();
@@ -1911,7 +1924,8 @@ app.post('/actions/:id/approve', requireAuth, async (req, res) => {
       .update({
         status: isFullyApproved ? 'approved' : 'pending',
         approved_by: approver.id,
-        approved_at: isFullyApproved ? new Date().toISOString() : null
+        approved_at: isFullyApproved ? new Date().toISOString() : null,
+        detailed_state: isFullyApproved ? 'COMPLETED' : 'WAITING_APPROVAL'
       })
       .eq('id', req.params.id)
       .select('*, employees!employee_id(name, company_id)')
@@ -2468,7 +2482,35 @@ app.post('/proactive/check-reminders', async (req, res) => {
       followUpsSent++;
     }
 
-    res.json({ success: true, remindersSent, meetingRemindersSent, escalatedCount, followUpsSent });
+    // ---- PREMIUM XÜSUSİYYƏTİ: Cavabsız Email Aşkarlanması ----
+    // Yalnız "Premium" planlı şirkətlər üçün işləyir (Business planda mövcud deyil)
+    let unansweredEmailAlertsSent = 0;
+    const { data: premiumCompanies } = await supabase
+      .from('companies')
+      .select('id')
+      .eq('plan_name', 'Premium');
+
+    for (const company of (premiumCompanies || [])) {
+      const emails = await readRecentEmailsDirect(company.id, true);
+      const twoDaysAgoMs = Date.now() - 2 * 24 * 60 * 60 * 1000;
+      const unanswered = emails.filter(e => e.isUnread && e.internalDate && parseInt(e.internalDate) < twoDaysAgoMs);
+
+      if (unanswered.length > 0) {
+        const { data: admins } = await supabase
+          .from('employees')
+          .select('id')
+          .eq('company_id', company.id)
+          .eq('role', 'Admin');
+        for (const admin of (admins || [])) {
+          await createNotification(company.id, admin.id,
+            `📧 ${unanswered.length} email 2+ gündür cavabsız qalıb (məs: "${unanswered[0].subject}"). Bir baxış lazım ola bilər.`,
+            null);
+          unansweredEmailAlertsSent++;
+        }
+      }
+    }
+
+    res.json({ success: true, remindersSent, meetingRemindersSent, escalatedCount, followUpsSent, unansweredEmailAlertsSent });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2511,6 +2553,94 @@ app.get('/internal/cost-tracking', async (req, res) => {
 });
 
 // ---- YALNIZ VUSERA SAHIBI ÜÇÜN — Subscription (abunəlik) idarəetməsi ----
+// ---- PREMIUM XÜSUSİYYƏTİ: Gündəlik Brifinq (RƏSMİ Claude Tool-Calling API ilə) ----
+// Bu, V2-nin mətn-əsaslı ACTION sistemindən TAM AYRIDIR — Claude-un öz tools API-sini istifadə edir.
+// Yalnız plan_name = 'Premium' olan şirkətlər üçün işləyir.
+
+const briefingTools = [
+  {
+    name: 'get_pending_approvals_count',
+    description: 'Şirkətdə hazırda təsdiq gözləyən sorğuların sayını qaytarır',
+    input_schema: { type: 'object', properties: {}, required: [] }
+  },
+  {
+    name: 'get_todays_meetings',
+    description: 'Bu gün planlaşdırılmış görüşlərin siyahısını qaytarır',
+    input_schema: { type: 'object', properties: {}, required: [] }
+  },
+  {
+    name: 'get_overdue_requests_count',
+    description: '2 gündən çox gözləyən (gecikmiş) sorğuların sayını qaytarır',
+    input_schema: { type: 'object', properties: {}, required: [] }
+  }
+];
+
+async function executeBriefingTool(toolName, companyId) {
+  if (toolName === 'get_pending_approvals_count') {
+    const { count } = await supabase.from('action_requests').select('id', { count: 'exact', head: true })
+      .eq('company_id', companyId).eq('status', 'pending');
+    return { count: count || 0 };
+  }
+  if (toolName === 'get_todays_meetings') {
+    const todayStart = new Date(); todayStart.setHours(0,0,0,0);
+    const todayEnd = new Date(); todayEnd.setHours(23,59,59,999);
+    const { data } = await supabase.from('meetings').select('title, meeting_time')
+      .eq('company_id', companyId).eq('status', 'active')
+      .gte('meeting_time', todayStart.toISOString()).lte('meeting_time', todayEnd.toISOString());
+    return { meetings: (data || []).map(m => ({ title: m.title, time: m.meeting_time })) };
+  }
+  if (toolName === 'get_overdue_requests_count') {
+    const twoDaysAgo = new Date(Date.now() - 2*24*60*60*1000).toISOString();
+    const { count } = await supabase.from('action_requests').select('id', { count: 'exact', head: true })
+      .eq('company_id', companyId).eq('status', 'pending').lt('created_at', twoDaysAgo);
+    return { count: count || 0 };
+  }
+  return { error: 'naməlum alət' };
+}
+
+app.post('/premium/daily-briefing/:companyId', async (req, res) => {
+  const provided = req.headers['x-api-secret'];
+  if (!process.env.API_SECRET || provided !== process.env.API_SECRET) {
+    return res.status(403).json({ error: 'İcazə yoxdur' });
+  }
+  try {
+    const { data: company } = await supabase.from('companies').select('plan_name, name').eq('id', req.params.companyId).single();
+    if (!company || company.plan_name !== 'Premium') {
+      return res.status(403).json({ error: 'Bu funksiya yalnız Premium planlı şirkətlər üçündür' });
+    }
+
+    let messages = [{ role: 'user', content: `${company.name} şirkəti üçün bu günün qısa idarəetmə brifinqini hazırla. Lazım olan alətləri istifadə et.` }];
+    let finalText = '';
+
+    for (let turn = 0; turn < 5; turn++) {
+      const response = await anthropic.messages.create({
+        model: 'claude-sonnet-4-5',
+        max_tokens: 1024,
+        tools: briefingTools,
+        messages
+      });
+
+      const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
+      const textBlocks = response.content.filter(b => b.type === 'text');
+      finalText = textBlocks.map(b => b.text).join('\n');
+
+      if (toolUseBlocks.length === 0) break; // Claude bitirib, cavab hazırdır
+
+      messages.push({ role: 'assistant', content: response.content });
+      const toolResults = [];
+      for (const tb of toolUseBlocks) {
+        const result = await executeBriefingTool(tb.name, req.params.companyId);
+        toolResults.push({ type: 'tool_result', tool_use_id: tb.id, content: JSON.stringify(result) });
+      }
+      messages.push({ role: 'user', content: toolResults });
+    }
+
+    res.json({ success: true, briefing: finalText });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/internal/subscriptions', async (req, res) => {
   const provided = req.headers['x-api-secret'];
   if (!process.env.API_SECRET || provided !== process.env.API_SECRET) {
