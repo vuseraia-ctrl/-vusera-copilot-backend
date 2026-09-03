@@ -632,6 +632,22 @@ app.post('/ask', askLimiter, requireAuth, async (req, res) => {
     }
     conversationMessages.push({ role: 'user', content: question });
 
+    // 3.55) PREMIUM: Çoxqatlı yaddaş — işçi haqqında uzunmüddətli saxlanan faktları kontekstə əlavə et
+    let employeeMemoryText = '';
+    const { data: companyForMemory } = await supabase.from('companies').select('plan_name').eq('id', employee.company_id).single();
+    const isPremiumCompany = companyForMemory?.plan_name === 'Premium';
+    if (isPremiumCompany) {
+      const { data: memories } = await supabase
+        .from('employee_memory')
+        .select('fact')
+        .eq('employee_id', employeeId)
+        .order('created_at', { ascending: false })
+        .limit(8);
+      if (memories && memories.length > 0) {
+        employeeMemoryText = '\nBU İŞÇİ HAQQINDA XATIRLADIĞIN FAKTLAR:\n' + memories.map(m => `- ${m.fact}`).join('\n') + '\n';
+      }
+    }
+
     // 3.6) Real "availability" yoxlaması — bu işçinin VERİLƏNLƏR BAZASINDAKI bütün
     // gözləyən/təsdiqlənmiş məzuniyyət tarixlərini gətiririk (yalnız söhbət yaddaşına güvənmək əvəzinə)
     const { data: existingLeaves } = await supabase
@@ -697,7 +713,7 @@ app.post('/ask', askLimiter, requireAuth, async (req, res) => {
 
     const systemPrompt = `Sən VUSERA Employee Copilot-san. Yalnız Azərbaycan dilində cavab ver.
 İstifadəçi: ${employee.name}, ${employee.departments?.name || ''}, rol: ${employee.role}.
-
+${employeeMemoryText}
 BUGÜNKÜ TAM TARİX VƏ SAAT: ${new Date().toLocaleString('az-AZ', { timeZone: 'Asia/Baku', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })} (Bakı vaxtı). "Bugün", "sabah", "gələn həftə" kimi ifadələri HƏMİŞƏ bu tarixə əsasən hesabla — heç vaxt köhnə və ya təxmini il istifadə etmə.
 
 Aşağıda bu sualla əlaqəli, sistemin indi tapdığı sənəd parçaları var (əgər söhbətin əvvəlki hissəsi varsa, onu da nəzərə al — məsələn "bəs neçə gün?" kimi davam sualları):
@@ -736,6 +752,7 @@ QAYDALAR:
    ƏLAVƏ (Görüşü ləğv etmə): Əgər istifadəçi bir görüşü ləğv etmək istəyirsə, 2-addımlı prosesə tabedir: ADDIM 1-də hansı görüşü ləğv edəcəyini aydınlaşdır, təsdiq soruş; ADDIM 2-də: ACTION:{"type":"cancel_meeting","titleMatch":"görüşün başlığından açar söz","title":"Ləğv edildi","detail":"..."}
    ƏLAVƏ (Görüşün vaxtını dəyişmə): Əgər istifadəçi bir görüşün vaxtını dəyişmək istəyirsə ("gorüşü sabaha köçür" kimi), 2-addımlı prosesə tabedir: ADDIM 1-də hansı görüş və yeni vaxtı aydınlaşdır, təsdiq soruş; ADDIM 2-də: ACTION:{"type":"reschedule_meeting","titleMatch":"görüşün başlığından açar söz","newStartDateTime":"YYYY-MM-DDTHH:mm:00+04:00","newEndDateTime":"YYYY-MM-DDTHH:mm:00+04:00","title":"Vaxt dəyişdirildi","detail":"..."}
    ƏLAVƏ (Hesabat): Əgər istifadəçi hesabat/report istəyirsə ("bu ayın IT ticketlərinin hesabatını hazırla" kimi), 2-addımlı prosesə tabedir: ADDIM 1-də nəyi əhatə edəcəyini (növ, status, müddət) göstər VƏ format seçimini soruş (PDF, yoxsa Google Sheets); ADDIM 2-də: ACTION:{"type":"generate_report","title":"Hesabat başlığı","reportType":"leave_request|it_ticket|expense_request və ya boş (hamısı)","reportStatus":"pending|approved|rejected və ya boş (hamısı)","sinceDays":30,"format":"pdf|sheets"}
+${isPremiumCompany ? `   ƏLAVƏ (Yaddaş — PREMIUM): Əgər istifadəçi "bunu xatırla", "bunu qeyd et" kimi bir şey desə, VƏ YA özün, işçinin təkrarlanan bir üstünlüyünü/vərdişini fərq etsən (məs: "mən həmişə PDF format istəyirəm"), cavabının sonunda (ACTION-dan AYRI, öz sətrində) bunu yaz: REMEMBER:{"fact":"qısa, aydın bir cümlə ilə fakt"}. Bunu, ancaq HƏQİQƏTƏN gələcəkdə faydalı olacaq bir fakt üçün istifadə et, hər cavabda YOX.` : ''}
    (İstifadəçi "excel", "sheets", "cədvəl" desə format="sheets"; "PDF" və ya heç nə deməsə format="pdf")
 4. Adi cavab üçün sonunda: SOURCE: Sənəd adı — Section X.X
 5. Qısa, 2-4 cümlə.
@@ -778,6 +795,20 @@ QAYDALAR:
       sourceType = 'denied';
     } else {
       // Cavabda bir "ACTION" (məzuniyyət/ticket/xərc sorğusu) var mı yoxla
+      // PREMIUM: "REMEMBER:" işarəsini tap, saxla, mətndən sil (istifadəçiyə göstərilməsin)
+      const rememberMatch = answerText.match(/REMEMBER:\s*(\{.*?\})/s);
+      if (rememberMatch && isPremiumCompany) {
+        try {
+          const rememberData = JSON.parse(rememberMatch[1]);
+          if (rememberData.fact) {
+            await supabase.from('employee_memory').insert({
+              employee_id: employeeId, company_id: employee.company_id, fact: rememberData.fact
+            });
+          }
+        } catch (e) { /* JSON səhvdirsə, sadəcə saxlamırıq */ }
+        answerText = answerText.replace(/REMEMBER:\s*\{.*?\}/s, '').trim();
+      }
+
       const actionMatch = answerText.match(/ACTION:\s*(\{.*?\})/s);
       if (actionMatch) {
         try {
