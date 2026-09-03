@@ -2507,6 +2507,34 @@ app.post('/proactive/check-reminders', async (req, res) => {
       escalatedCount++;
     }
 
+    // ---- PREMIUM XÜSUSİYYƏTİ: SLA İzlənməsi — normal/aşağı prioritet üçün də hədəflər (Business-də yalnız "high" izlənir) ----
+    let slaBreachesFlagged = 0;
+    const slaTargetsHours = { normal: 24, low: 72 };
+    for (const [prio, hours] of Object.entries(slaTargetsHours)) {
+      const cutoff = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+      const { data: breaches } = await supabase
+        .from('action_requests')
+        .select('*, employees!employee_id(name, company_id)')
+        .eq('type', 'it_ticket').eq('priority', prio).eq('status', 'pending').eq('escalated', false)
+        .lt('created_at', cutoff);
+
+      for (const ticket of breaches || []) {
+        const emp = ticket.employees;
+        if (!emp) continue;
+        const { data: companyPlan } = await supabase.from('companies').select('plan_name').eq('id', emp.company_id).single();
+        if (companyPlan?.plan_name !== 'Premium') continue; // Yalnız Premium
+
+        const { data: admins } = await supabase.from('employees').select('id').eq('company_id', emp.company_id).eq('role', 'Admin');
+        for (const admin of admins || []) {
+          await createNotification(emp.company_id, admin.id,
+            `⏱️ SLA POZUNTUSU: "${ticket.title}" (${emp.name}) — "${prio}" prioritetli ticket, ${hours} saatlıq SLA hədəfini keçib.`,
+            ticket.id);
+        }
+        await supabase.from('action_requests').update({ escalated: true }).eq('id', ticket.id);
+        slaBreachesFlagged++;
+      }
+    }
+
     // ---- Automated Follow-up — 1 gün əvvəl HƏLL OLUNMUŞ IT ticket-lər üçün "tam həll olubmu?" sualı ----
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const twoDaysAgoForFollowup = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
@@ -2593,7 +2621,7 @@ app.post('/proactive/check-reminders', async (req, res) => {
       }
     }
 
-    res.json({ success: true, remindersSent, meetingRemindersSent, escalatedCount, followUpsSent, unansweredEmailAlertsSent, dailyBriefingsSent });
+    res.json({ success: true, remindersSent, meetingRemindersSent, escalatedCount, followUpsSent, unansweredEmailAlertsSent, dailyBriefingsSent, slaBreachesFlagged });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2769,6 +2797,50 @@ app.post('/webhook/trigger/:companyId', async (req, res) => {
     if (error) throw error;
 
     res.json({ success: true, requestId: created.id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- PREMIUM XÜSUSİYYƏTİ: HR Analitikası ----
+app.get('/premium/hr-analytics/:companyId', requireAuth, async (req, res) => {
+  try {
+    if (req.employee.company_id !== req.params.companyId) return res.status(403).json({ error: 'Bu şirkətə girişiniz yoxdur' });
+    if (req.employee.role !== 'Admin' && !req.employee.role.includes('HR')) return res.status(403).json({ error: 'Yalnız Admin/HR görə bilər' });
+
+    const { data: company } = await supabase.from('companies').select('plan_name').eq('id', req.params.companyId).single();
+    if (company?.plan_name !== 'Premium') return res.status(403).json({ error: 'Bu funksiya yalnız Premium planlı şirkətlər üçündür' });
+
+    // Departament üzrə işçi sayı
+    const { data: employees } = await supabase.from('employees').select('id, status, departments(name)').eq('company_id', req.params.companyId);
+    const activeCount = (employees || []).filter(e => e.status === 'active').length;
+    const byDept = {};
+    for (const e of (employees || [])) {
+      const d = e.departments?.name || 'Naməlum';
+      byDept[d] = (byDept[d] || 0) + 1;
+    }
+
+    // Məzuniyyət sorğularının orta təsdiq müddəti (gün olaraq)
+    const { data: leaveRequests } = await supabase
+      .from('action_requests')
+      .select('created_at, approved_at')
+      .eq('company_id', req.params.companyId)
+      .eq('type', 'leave_request')
+      .eq('status', 'approved')
+      .not('approved_at', 'is', null);
+
+    let avgApprovalDays = null;
+    if (leaveRequests && leaveRequests.length > 0) {
+      const totalDays = leaveRequests.reduce((sum, r) => sum + (new Date(r.approved_at) - new Date(r.created_at)) / (24*60*60*1000), 0);
+      avgApprovalDays = (totalDays / leaveRequests.length).toFixed(1);
+    }
+
+    res.json({
+      activeEmployeeCount: activeCount,
+      employeesByDepartment: byDept,
+      avgLeaveApprovalDays: avgApprovalDays,
+      totalLeaveRequestsAnalyzed: (leaveRequests || []).length
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
