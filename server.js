@@ -1779,6 +1779,9 @@ app.post('/documents/from-template', requireAuth, async (req, res) => {
 
     const { data: templateDoc } = await supabase.from('documents').select('*').eq('id', templateId).single();
     if (!templateDoc) return res.status(404).json({ error: 'Şablon tapılmadı' });
+    if (templateDoc.company_id !== req.employee.company_id) {
+      return res.status(403).json({ error: 'Bu şablon sizin şirkətinizə aid deyil' });
+    }
 
     const { data: chunks } = await supabase
       .from('document_chunks')
