@@ -2585,22 +2585,27 @@ app.post('/proactive/check-reminders', async (req, res) => {
       .eq('plan_name', 'Premium');
 
     for (const company of (premiumCompanies || [])) {
-      const emails = await readRecentEmailsDirect(company.id, true);
-      const twoDaysAgoMs = Date.now() - 2 * 24 * 60 * 60 * 1000;
-      const unanswered = emails.filter(e => e.isUnread && e.internalDate && parseInt(e.internalDate) < twoDaysAgoMs);
+      try {
+        const emails = await readRecentEmailsDirect(company.id, true);
+        const twoDaysAgoMs = Date.now() - 2 * 24 * 60 * 60 * 1000;
+        const unanswered = emails.filter(e => e.isUnread && e.internalDate && parseInt(e.internalDate) < twoDaysAgoMs);
 
-      if (unanswered.length > 0) {
-        const { data: admins } = await supabase
-          .from('employees')
-          .select('id')
-          .eq('company_id', company.id)
-          .eq('role', 'Admin');
-        for (const admin of (admins || [])) {
-          await createNotification(company.id, admin.id,
-            `📧 ${unanswered.length} email 2+ gündür cavabsız qalıb (məs: "${unanswered[0].subject}"). Bir baxış lazım ola bilər.`,
-            null);
-          unansweredEmailAlertsSent++;
+        if (unanswered.length > 0) {
+          const { data: admins } = await supabase
+            .from('employees')
+            .select('id')
+            .eq('company_id', company.id)
+            .eq('role', 'Admin');
+          for (const admin of (admins || [])) {
+            await createNotification(company.id, admin.id,
+              `📧 ${unanswered.length} email 2+ gündür cavabsız qalıb (məs: "${unanswered[0].subject}"). Bir baxış lazım ola bilər.`,
+              null);
+            unansweredEmailAlertsSent++;
+          }
         }
+      } catch (companyErr) {
+        console.error(`Cavabsız email yoxlaması uğursuz oldu (${company.id}):`, companyErr.message);
+        // Bu şirkətin xətası, digər şirkətlərin emalını dayandırmasın
       }
     }
 
@@ -2608,6 +2613,7 @@ app.post('/proactive/check-reminders', async (req, res) => {
     let dailyBriefingsSent = 0;
     const todayDateStr = new Date().toISOString().slice(0, 10);
     for (const company of (premiumCompanies || [])) {
+      try {
       if (company.last_briefing_sent_at === todayDateStr) continue; // bu gün artıq göndərilib
 
       let briefingMessages = [{ role: 'user', content: `${company.name} şirkəti üçün bu günün qısa idarəetmə brifinqini hazırla. Lazım olan alətləri istifadə et.` }];
@@ -2635,6 +2641,10 @@ app.post('/proactive/check-reminders', async (req, res) => {
         }
         await supabase.from('companies').update({ last_briefing_sent_at: todayDateStr }).eq('id', company.id);
         dailyBriefingsSent++;
+      }
+      } catch (companyErr) {
+        console.error(`Gündəlik brifinq uğursuz oldu (${company.id}):`, companyErr.message);
+        // Bu şirkətin xətası, digər şirkətlərin brifinqini dayandırmasın
       }
     }
 
@@ -2797,6 +2807,24 @@ app.post('/webhook/trigger/:companyId', async (req, res) => {
     // Webhook-la yaradılan sorğu, ilk Admin-ə mənsub edilir (webhook-un "işçisi" yoxdur)
     const { data: admin } = await supabase.from('employees').select('id').eq('company_id', company.id).eq('role', 'Admin').limit(1).single();
     if (!admin) return res.status(400).json({ error: 'Şirkətdə Admin tapılmadı' });
+
+    // IDEMPOTENCY: xarici sistemin təsadüfən eyni webhook-u 2 dəfə göndərməsinin qarşısını al
+    // (məs: şəbəkə vaxtı bitəndə avtomatik təkrar cəhd) — eyni məzmun, son 60 saniyədə
+    const webhookFingerprint = crypto.createHash('sha256')
+      .update(`webhook:${company.id}:${type}:${title}:${detail || ''}`)
+      .digest('hex');
+    const sixtySecondsAgoWebhook = new Date(Date.now() - 60 * 1000).toISOString();
+    const { data: existingWebhookCall } = await supabase
+      .from('action_fingerprints')
+      .select('id')
+      .eq('fingerprint', webhookFingerprint)
+      .eq('employee_id', admin.id)
+      .gte('created_at', sixtySecondsAgoWebhook)
+      .maybeSingle();
+    if (existingWebhookCall) {
+      return res.json({ success: true, duplicate: true, message: 'Bu sorğu artıq son 60 saniyədə qəbul edilib, təkrar yaradılmadı' });
+    }
+    await supabase.from('action_fingerprints').insert({ fingerprint: webhookFingerprint, employee_id: admin.id });
 
     const { data: created, error } = await supabase
       .from('action_requests')
