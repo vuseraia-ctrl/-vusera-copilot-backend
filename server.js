@@ -1065,7 +1065,11 @@ ${isPremiumCompany ? `   ƏLAVƏ (Yaddaş — PREMIUM): Əgər istifadəçi "bun
           } else {
           // Real əməliyyat sorğusunu verilənlər bazasına yaz (status: pending, manager təsdiqini gözləyir)
           // 2000 AZN-dən yuxarı xərc sorğuları — Expense Policy-yə əsasən 2 təsdiq (Manager + Finance) tələb edir
-          const amountValue = actionData.amount ? parseFloat(actionData.amount) : null;
+          let amountValue = actionData.amount ? parseFloat(actionData.amount) : null;
+          // DOĞRULAMA: mənfi və ya etibarsız (NaN) məbləği rədd et (analitika/anomaliya hesablamalarını qorumaq üçün)
+          if (amountValue !== null && (isNaN(amountValue) || amountValue < 0)) {
+            amountValue = null;
+          }
           const requiredApprovals = (actionData.type === 'expense_request' && amountValue && amountValue > 2000) ? 2 : 1;
 
           // PREMIUM: bu şirkət Premium plandadırsa, detallı task state-i də izləyirik
