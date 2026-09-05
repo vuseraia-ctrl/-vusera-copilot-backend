@@ -1561,6 +1561,10 @@ app.delete('/employees/:id', requireAuth, async (req, res) => {
 // ---- YENİ ŞİRKƏT ONBOARDING — bir çağırışla: şirkət + standart departamentlər + Admin hesabı ----
 // Bu, yalnız VUSERA-nın öz komandası (API_SECRET bilən) tərəfindən çağırılmalıdır — yeni müştəri əlavə etmək üçün.
 app.post('/onboarding/new-company', async (req, res) => {
+  const ownerProvided = req.headers['x-owner-secret'];
+  if (!process.env.OWNER_SECRET || ownerProvided !== process.env.OWNER_SECRET) {
+    return res.status(403).json({ error: 'İcazə yoxdur' });
+  }
   try {
     const { companyName, adminName, adminEmail } = req.body;
     if (!companyName || !adminName || !adminEmail) {
@@ -1621,8 +1625,8 @@ app.post('/onboarding/new-company', async (req, res) => {
 });
 
 app.post('/companies', async (req, res) => {
-  const provided = req.headers['x-api-secret'];
-  if (!process.env.API_SECRET || provided !== process.env.API_SECRET) {
+  const provided = req.headers['x-owner-secret'];
+  if (!process.env.OWNER_SECRET || provided !== process.env.OWNER_SECRET) {
     return res.status(403).json({ error: 'İcazə yoxdur' });
   }
   try {
@@ -2451,8 +2455,8 @@ Yalnız xülasə mətnini yaz, başqa heç nə.`;
 // 2 gündən çox gözləyən sorğular üçün: manager-ə "hələ baxılmayıb" xatırlatması,
 // işçiyə isə "sorğunuz hələ gözləyir" məlumatı göndərir.
 app.post('/proactive/check-reminders', async (req, res) => {
-  const provided = req.headers['x-api-secret'];
-  if (!process.env.API_SECRET || provided !== process.env.API_SECRET) {
+  const provided = req.headers['x-owner-secret'];
+  if (!process.env.OWNER_SECRET || provided !== process.env.OWNER_SECRET) {
     return res.status(403).json({ error: 'İcazə yoxdur' });
   }
   try {
@@ -2689,8 +2693,8 @@ app.post('/proactive/check-reminders', async (req, res) => {
 // ---- YALNIZ VUSERA SAHIBI ÜÇÜN — AI istifadə xərci izləməsi (heç bir müştəri Admin-i bunu görə bilməz) ----
 // Bu endpoint adi işçi girişi (requireAuth) ilə DEYİL, birbaşa API_SECRET ilə qorunur.
 app.get('/internal/cost-tracking', async (req, res) => {
-  const provided = req.headers['x-api-secret'];
-  if (!process.env.API_SECRET || provided !== process.env.API_SECRET) {
+  const provided = req.headers['x-owner-secret'];
+  if (!process.env.OWNER_SECRET || provided !== process.env.OWNER_SECRET) {
     return res.status(403).json({ error: 'İcazə yoxdur' });
   }
   try {
@@ -2768,8 +2772,8 @@ async function executeBriefingTool(toolName, companyId) {
 }
 
 app.post('/premium/daily-briefing/:companyId', async (req, res) => {
-  const provided = req.headers['x-api-secret'];
-  if (!process.env.API_SECRET || provided !== process.env.API_SECRET) {
+  const provided = req.headers['x-owner-secret'];
+  if (!process.env.OWNER_SECRET || provided !== process.env.OWNER_SECRET) {
     return res.status(403).json({ error: 'İcazə yoxdur' });
   }
   try {
@@ -2923,8 +2927,8 @@ app.get('/premium/hr-analytics/:companyId', requireAuth, async (req, res) => {
 });
 
 app.get('/internal/subscriptions', async (req, res) => {
-  const provided = req.headers['x-api-secret'];
-  if (!process.env.API_SECRET || provided !== process.env.API_SECRET) {
+  const provided = req.headers['x-owner-secret'];
+  if (!process.env.OWNER_SECRET || provided !== process.env.OWNER_SECRET) {
     return res.status(403).json({ error: 'İcazə yoxdur' });
   }
   try {
@@ -2940,8 +2944,8 @@ app.get('/internal/subscriptions', async (req, res) => {
 });
 
 app.patch('/internal/subscriptions/:companyId', async (req, res) => {
-  const provided = req.headers['x-api-secret'];
-  if (!process.env.API_SECRET || provided !== process.env.API_SECRET) {
+  const provided = req.headers['x-owner-secret'];
+  if (!process.env.OWNER_SECRET || provided !== process.env.OWNER_SECRET) {
     return res.status(403).json({ error: 'İcazə yoxdur' });
   }
   try {
