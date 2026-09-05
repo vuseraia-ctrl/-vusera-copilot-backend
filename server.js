@@ -478,6 +478,12 @@ async function requireAuth(req, res, next) {
 
     if (empError || !employee) return res.status(404).json({ error: 'İstifadəçiyə bağlı işçi tapılmadı' });
 
+    // KRİTİK: deaktiv edilmiş (işdən çıxarılmış) işçinin, hələ etibarlı token-i olsa belə,
+    // sistemdən istifadə etməsinin qarşısını al
+    if (employee.status === 'inactive') {
+      return res.status(403).json({ error: 'Bu hesab deaktiv edilib. Suallarınız üçün Admin ilə əlaqə saxlayın.' });
+    }
+
     req.employee = employee;
     next();
   } catch (err) {
