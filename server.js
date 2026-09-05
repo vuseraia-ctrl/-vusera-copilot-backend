@@ -514,6 +514,11 @@ async function createNotification(companyId, employeeId, message, relatedActionI
 // ---- Sadə API açarı yoxlaması (tam authentication deyil, amma təsadüfi sorğulara qarşı maneədir) ----
 // Real login sistemi qurulana qədər, hər sorğu bu gizli açarı bilməlidir.
 function checkApiSecret(req, res, next) {
+  // OWNER-ONLY endpoint-lər (bunların öz, ayrıca OWNER_SECRET yoxlaması var, bu qlobal qapı onlara aid deyil)
+  const ownerOnlyPaths = ['/companies', '/proactive/check-reminders', '/internal/cost-tracking',
+    '/premium/daily-briefing', '/internal/subscriptions', '/onboarding/new-company'];
+  if (ownerOnlyPaths.some(p => req.path.startsWith(p))) return next();
+
   const provided = req.headers['x-api-secret'];
   if (!process.env.API_SECRET) return next(); // .env-də təyin olunmayıbsa, keçir (development üçün)
   if (provided !== process.env.API_SECRET) {
