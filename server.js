@@ -2441,6 +2441,10 @@ Yalnız xülasə mətnini yaz, başqa heç nə.`;
 // 2 gündən çox gözləyən sorğular üçün: manager-ə "hələ baxılmayıb" xatırlatması,
 // işçiyə isə "sorğunuz hələ gözləyir" məlumatı göndərir.
 app.post('/proactive/check-reminders', async (req, res) => {
+  const provided = req.headers['x-api-secret'];
+  if (!process.env.API_SECRET || provided !== process.env.API_SECRET) {
+    return res.status(403).json({ error: 'İcazə yoxdur' });
+  }
   try {
     const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
 
