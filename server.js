@@ -2145,6 +2145,12 @@ app.get('/notifications/me', requireAuth, async (req, res) => {
 // Bir bildirişi "oxunmuş" kimi işarələmək
 app.post('/notifications/:id/read', requireAuth, async (req, res) => {
   try {
+    const { data: notifCheck } = await supabase.from('notifications').select('employee_id').eq('id', req.params.id).single();
+    if (!notifCheck) return res.status(404).json({ error: 'Bildiriş tapılmadı' });
+    if (notifCheck.employee_id !== req.employee.id) {
+      return res.status(403).json({ error: 'Bu bildiriş sizə aid deyil' });
+    }
+
     const { data, error } = await supabase
       .from('notifications')
       .update({ is_read: true })
