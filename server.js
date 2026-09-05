@@ -1611,6 +1611,10 @@ app.post('/onboarding/new-company', async (req, res) => {
 });
 
 app.post('/companies', async (req, res) => {
+  const provided = req.headers['x-api-secret'];
+  if (!process.env.API_SECRET || provided !== process.env.API_SECRET) {
+    return res.status(403).json({ error: 'İcazə yoxdur' });
+  }
   try {
     const { name } = req.body;
     if (!name) return res.status(400).json({ error: 'name tələb olunur' });
@@ -1623,10 +1627,14 @@ app.post('/companies', async (req, res) => {
 });
 
 // Şirkət üçün departament yaratmaq
-app.post('/departments', async (req, res) => {
+app.post('/departments', requireAuth, async (req, res) => {
   try {
+    if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Yalnız Admin departament yarada bilər' });
     const { companyId, name } = req.body;
     if (!companyId || !name) return res.status(400).json({ error: 'companyId və name tələb olunur' });
+    if (companyId !== req.employee.company_id) {
+      return res.status(403).json({ error: 'Yalnız öz şirkətiniz üçün departament yarada bilərsiniz' });
+    }
     const { data, error } = await supabase
       .from('departments')
       .insert({ company_id: companyId, name })
