@@ -780,6 +780,7 @@ QAYDALAR:
    ƏLAVƏ (Görüşü ləğv etmə): Əgər istifadəçi bir görüşü ləğv etmək istəyirsə, 2-addımlı prosesə tabedir: ADDIM 1-də hansı görüşü ləğv edəcəyini aydınlaşdır, təsdiq soruş; ADDIM 2-də: ACTION:{"type":"cancel_meeting","titleMatch":"görüşün başlığından açar söz","title":"Ləğv edildi","detail":"..."}
    ƏLAVƏ (Görüşün vaxtını dəyişmə): Əgər istifadəçi bir görüşün vaxtını dəyişmək istəyirsə ("gorüşü sabaha köçür" kimi), 2-addımlı prosesə tabedir: ADDIM 1-də hansı görüş və yeni vaxtı aydınlaşdır, təsdiq soruş; ADDIM 2-də: ACTION:{"type":"reschedule_meeting","titleMatch":"görüşün başlığından açar söz","newStartDateTime":"YYYY-MM-DDTHH:mm:00+04:00","newEndDateTime":"YYYY-MM-DDTHH:mm:00+04:00","title":"Vaxt dəyişdirildi","detail":"..."}
    ƏLAVƏ (Hesabat): Əgər istifadəçi hesabat/report istəyirsə ("bu ayın IT ticketlərinin hesabatını hazırla" kimi), 2-addımlı prosesə tabedir: ADDIM 1-də nəyi əhatə edəcəyini (növ, status, müddət) göstər VƏ format seçimini soruş (PDF, yoxsa Google Sheets); ADDIM 2-də: ACTION:{"type":"generate_report","title":"Hesabat başlığı","reportType":"leave_request|it_ticket|expense_request və ya boş (hamısı)","reportStatus":"pending|approved|rejected və ya boş (hamısı)","sinceDays":30,"format":"pdf|sheets"}
+   ƏLAVƏ (Kollegaya mesaj): Əgər istifadəçi "filan şəxsə deyin ki...", "filan şəxsə mesaj göndər" kimi bir şey desə, dərhal (təsdiq soruşmadan): ACTION:{"type":"send_message","recipientName":"qəbul edənin adı (mətndə deyildiyi kimi)","message":"ötürüləcək mesajın məzmunu"}
 ${isPremiumCompany ? `   ƏLAVƏ (Yaddaş — PREMIUM): Əgər istifadəçi "bunu xatırla", "bunu qeyd et" kimi bir şey desə, VƏ YA özün, işçinin təkrarlanan bir üstünlüyünü/vərdişini fərq etsən (məs: "mən həmişə PDF format istəyirəm"), cavabının sonunda (ACTION-dan AYRI, öz sətrində) bunu yaz: REMEMBER:{"fact":"qısa, aydın bir cümlə ilə fakt"}. Bunu, ancaq HƏQİQƏTƏN gələcəkdə faydalı olacaq bir fakt üçün istifadə et, hər cavabda YOX.` : ''}
    (İstifadəçi "excel", "sheets", "cədvəl" desə format="sheets"; "PDF" və ya heç nə deməsə format="pdf")
 4. Adi cavab üçün sonunda: SOURCE: Sənəd adı — Section X.X
@@ -1020,6 +1021,23 @@ ${isPremiumCompany ? `   ƏLAVƏ (Yaddaş — PREMIUM): Əgər istifadəçi "bun
                 detail: 'Uyğun aktiv görüş tapılmadı',
                 status: 'failed'
               };
+            }
+          } else if (actionData.type === 'send_message') {
+            // Kollegaya VUSERA vasitəsilə mesaj ötürmə — həqiqi chat yox, bildiriş kimi çatdırılır
+            const { data: recipient } = await supabase
+              .from('employees')
+              .select('id, name')
+              .eq('company_id', employee.company_id)
+              .ilike('name', `%${actionData.recipientName}%`)
+              .limit(1)
+              .maybeSingle();
+
+            if (recipient) {
+              await createNotification(employee.company_id, recipient.id,
+                `💬 ${employee.name}-dan: ${actionData.message}`, null);
+              createdAction = { id: null, type: 'send_message', title: `Mesaj göndərildi: ${recipient.name}`, detail: actionData.message, priority: 'normal', status: 'completed' };
+            } else {
+              createdAction = { id: null, type: 'send_message', title: 'Mesaj göndərilmədi', detail: `"${actionData.recipientName}" adlı işçi tapılmadı`, priority: 'normal', status: 'failed' };
             }
           } else if (actionData.type === 'generate_report') {
             // Hesabat yaratma - format="sheets" olarsa Google Sheets-ə, əks halda PDF-ə yaradılır
