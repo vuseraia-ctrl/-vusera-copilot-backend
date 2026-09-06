@@ -516,7 +516,7 @@ async function createNotification(companyId, employeeId, message, relatedActionI
 function checkApiSecret(req, res, next) {
   // OWNER-ONLY endpoint-lər (bunların öz, ayrıca OWNER_SECRET yoxlaması var, bu qlobal qapı onlara aid deyil)
   const ownerOnlyPaths = ['/companies', '/proactive/check-reminders', '/internal/cost-tracking',
-    '/premium/daily-briefing', '/internal/subscriptions', '/onboarding/new-company'];
+    '/premium/daily-briefing', '/internal/subscriptions', '/onboarding/new-company', '/oauth/google'];
   if (ownerOnlyPaths.some(p => req.path.startsWith(p))) return next();
 
   const provided = req.headers['x-api-secret'];
@@ -2328,6 +2328,53 @@ app.get('/companies/:companyId/integrations', requireAuth, async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- Google OAuth "Consent" axını — müştərinin öz Google Workspace-inə qoşulması üçün ----
+// Addım 1: Admin, öz Google Client ID/Secret-ni saxladıqdan sonra, bu link-i alır və klikləyir
+app.get('/oauth/google/start/:companyId', async (req, res) => {
+  try {
+    const { data: company } = await supabase.from('companies').select('google_client_id').eq('id', req.params.companyId).single();
+    if (!company?.google_client_id) return res.status(400).send('Əvvəlcə Google Client ID/Secret saxlanılmalıdır.');
+
+    const redirectUri = `${req.protocol}://${req.get('host')}/oauth/google/callback`;
+    const scopes = [
+      'https://www.googleapis.com/auth/gmail.modify',
+      'https://www.googleapis.com/auth/calendar',
+      'https://www.googleapis.com/auth/spreadsheets',
+      'https://www.googleapis.com/auth/drive'
+    ];
+    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(company.google_client_id)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&access_type=offline&prompt=consent&scope=${encodeURIComponent(scopes.join(' '))}&state=${req.params.companyId}`;
+    res.redirect(authUrl);
+  } catch (err) {
+    res.status(500).send('Xəta: ' + err.message);
+  }
+});
+
+// Addım 2: Google, istifadəçi icazə verəndən sonra, bura "code" ilə geri qaytarır
+app.get('/oauth/google/callback', async (req, res) => {
+  try {
+    const { code, state: companyId } = req.query;
+    if (!code || !companyId) return res.status(400).send('Xəta: code və ya companyId çatışmır.');
+
+    const { data: company } = await supabase.from('companies').select('google_client_id, google_client_secret').eq('id', companyId).single();
+    if (!company?.google_client_id || !company?.google_client_secret) {
+      return res.status(400).send('Şirkətin Google açarları tapılmadı.');
+    }
+
+    const redirectUri = `${req.protocol}://${req.get('host')}/oauth/google/callback`;
+    const oauth2Client = new google.auth.OAuth2(company.google_client_id, company.google_client_secret, redirectUri);
+    const { tokens } = await oauth2Client.getToken(code);
+
+    if (!tokens.refresh_token) {
+      return res.send('<h2>Xəta: refresh_token alınmadı.</h2><p>Zəhmət olmasa, Google hesabından "VUSERA" tətbiqinin icazəsini geri çağırıb (myaccount.google.com/permissions), yenidən cəhd edin.</p>');
+    }
+
+    await supabase.from('companies').update({ google_refresh_token: tokens.refresh_token }).eq('id', companyId);
+    res.send('<h2>✅ Uğurla bağlandı!</h2><p>Bu pəncərəni bağlaya bilərsiniz.</p>');
+  } catch (err) {
+    res.status(500).send('Xəta: ' + err.message);
   }
 });
 
