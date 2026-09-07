@@ -783,6 +783,7 @@ QAYDALAR:
    ƏLAVƏ (Görüşün vaxtını dəyişmə): Əgər istifadəçi bir görüşün vaxtını dəyişmək istəyirsə ("gorüşü sabaha köçür" kimi), 2-addımlı prosesə tabedir: ADDIM 1-də hansı görüş və yeni vaxtı aydınlaşdır, təsdiq soruş; ADDIM 2-də: ACTION:{"type":"reschedule_meeting","titleMatch":"görüşün başlığından açar söz","newStartDateTime":"YYYY-MM-DDTHH:mm:00+04:00","newEndDateTime":"YYYY-MM-DDTHH:mm:00+04:00","title":"Vaxt dəyişdirildi","detail":"..."}
    ƏLAVƏ (Hesabat): Əgər istifadəçi hesabat/report istəyirsə ("bu ayın IT ticketlərinin hesabatını hazırla" kimi), 2-addımlı prosesə tabedir: ADDIM 1-də nəyi əhatə edəcəyini (növ, status, müddət) göstər VƏ format seçimini soruş (PDF, yoxsa Google Sheets); ADDIM 2-də: ACTION:{"type":"generate_report","title":"Hesabat başlığı","reportType":"leave_request|it_ticket|expense_request və ya boş (hamısı)","reportStatus":"pending|approved|rejected və ya boş (hamısı)","sinceDays":30,"format":"pdf|sheets"}
    ƏLAVƏ (Kollegaya mesaj): Əgər istifadəçi "filan şəxsə deyin ki...", "filan şəxsə mesaj göndər" kimi bir şey desə, dərhal (təsdiq soruşmadan): ACTION:{"type":"send_message","recipientName":"qəbul edənin adı (mətndə deyildiyi kimi)","message":"ötürüləcək mesajın məzmunu"}
+   ƏLAVƏ (Sənəd Müqayisəsi — PREMIUM): Əgər istifadəçi 2 sənədi müqayisə etmək istəsə ("bu iki müqaviləni müqayisə et" kimi), dərhal: ACTION:{"type":"compare_documents","doc1Title":"birinci sənədin başlığı (mətndə deyildiyi kimi)","doc2Title":"ikinci sənədin başlığı"}
 ${isPremiumCompany ? `   ƏLAVƏ (Yaddaş — PREMIUM): Əgər istifadəçi "bunu xatırla", "bunu qeyd et" kimi bir şey desə, VƏ YA özün, işçinin təkrarlanan bir üstünlüyünü/vərdişini fərq etsən (məs: "mən həmişə PDF format istəyirəm"), cavabının sonunda (ACTION-dan AYRI, öz sətrində) bunu yaz: REMEMBER:{"fact":"qısa, aydın bir cümlə ilə fakt"}. Bunu, ancaq HƏQİQƏTƏN gələcəkdə faydalı olacaq bir fakt üçün istifadə et, hər cavabda YOX.` : ''}
    (İstifadəçi "excel", "sheets", "cədvəl" desə format="sheets"; "PDF" və ya heç nə deməsə format="pdf")
 4. Adi cavab üçün sonunda: SOURCE: Sənəd adı — Section X.X
@@ -1025,6 +1026,38 @@ ${isPremiumCompany ? `   ƏLAVƏ (Yaddaş — PREMIUM): Əgər istifadəçi "bun
                 detail: 'Uyğun aktiv görüş tapılmadı',
                 status: 'failed'
               };
+            }
+          } else if (actionData.type === 'compare_documents') {
+            // PREMIUM: 2 sənədi tapıb, Claude ilə müqayisə etdirir
+            const { data: companyForCompare } = await supabase.from('companies').select('plan_name').eq('id', employee.company_id).single();
+            if (companyForCompare?.plan_name !== 'Premium') {
+              createdAction = { id: null, type: 'compare_documents', title: 'Bu funksiya Premium plan tələb edir', detail: 'Sənəd müqayisəsi, yalnız Premium planlı şirkətlər üçündür.', priority: 'normal', status: 'failed' };
+            } else {
+              const findDoc = async (titleGuess) => {
+                const { data } = await supabase.from('documents').select('id, title').eq('company_id', employee.company_id).ilike('title', `%${titleGuess}%`).limit(1).maybeSingle();
+                return data;
+              };
+              const doc1 = await findDoc(actionData.doc1Title);
+              const doc2 = await findDoc(actionData.doc2Title);
+
+              if (!doc1 || !doc2) {
+                createdAction = { id: null, type: 'compare_documents', title: 'Sənədlər tapılmadı', detail: `"${actionData.doc1Title}" və ya "${actionData.doc2Title}" tapılmadı`, priority: 'normal', status: 'failed' };
+              } else {
+                const getContent = async (docId) => {
+                  const { data } = await supabase.from('document_chunks').select('content').eq('document_id', docId).order('id', { ascending: true });
+                  return (data || []).map(c => c.content).join('\n\n');
+                };
+                const content1 = await getContent(doc1.id);
+                const content2 = await getContent(doc2.id);
+
+                const compareMsg = await anthropic.messages.create({
+                  model: 'claude-sonnet-4-6',
+                  max_tokens: 800,
+                  messages: [{ role: 'user', content: `Bu iki sənədi müqayisə et, əsas fərqləri, riskləri (varsa) qısa, aydın maddələr halında Azərbaycan dilində yaz.\n\nSənəd 1 (${doc1.title}):\n${content1}\n\nSənəd 2 (${doc2.title}):\n${content2}` }]
+                });
+                const comparisonText = compareMsg.content.map(b => b.text || '').join('');
+                createdAction = { id: null, type: 'compare_documents', title: `Müqayisə: ${doc1.title} vs ${doc2.title}`, detail: comparisonText, priority: 'normal', status: 'completed' };
+              }
             }
           } else if (actionData.type === 'send_message') {
             // Kollegaya VUSERA vasitəsilə mesaj ötürmə — həqiqi chat yox, bildiriş kimi çatdırılır
