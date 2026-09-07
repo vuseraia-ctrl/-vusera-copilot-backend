@@ -744,6 +744,8 @@ app.post('/ask', askLimiter, requireAuth, async (req, res) => {
 ${employeeMemoryText}
 BUGÜNKÜ TAM TARİX VƏ SAAT: ${new Date().toLocaleString('az-AZ', { timeZone: 'Asia/Baku', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })} (Bakı vaxtı). "Bugün", "sabah", "gələn həftə" kimi ifadələri HƏMİŞƏ bu tarixə əsasən hesabla — heç vaxt köhnə və ya təxmini il istifadə etmə.
 
+WEB AXTARIŞI: Sənin bir "web_search" alətin var. Bunu YALNIZ istifadəçinin sualı, şirkət sənədlərində/daxili məlumatda TAPILA BİLMƏYƏCƏK, kənar/ümumi/güncəl bir məlumat tələb etdikdə istifadə et (məs: "USD məzənnəsi neçədir?", "bu şirkət kimdir?", "hava necədir?"). Şirkətin öz daxili siyasətləri/sorğuları haqqında suallarda, HEÇ VAXT web axtarışı ETMƏ — yalnız aşağıdakı bilik bazasından istifadə et.
+
 Aşağıda bu sualla əlaqəli, sistemin indi tapdığı sənəd parçaları var (əgər söhbətin əvvəlki hissəsi varsa, onu da nəzərə al — məsələn "bəs neçə gün?" kimi davam sualları):
 ${contextText || '(bu sual üçün uyğun yeni sənəd tapılmadı — əvvəlki söhbətə əsaslana bilərsən, əks halda tapılmadığını de)'}
 
@@ -797,7 +799,8 @@ ${isPremiumCompany ? `   ƏLAVƏ (Yaddaş — PREMIUM): Əgər istifadəçi "bun
         model: 'claude-sonnet-4-6',
         max_tokens: 500,
         system: systemPrompt,
-        messages: conversationMessages
+        messages: conversationMessages,
+        tools: [{ type: 'web_search_20250305', name: 'web_search' }]
       });
     } catch (e) {
       console.error('Anthropic API xətası, yenidən cəhd edilir:', e.message);
@@ -807,7 +810,8 @@ ${isPremiumCompany ? `   ƏLAVƏ (Yaddaş — PREMIUM): Əgər istifadəçi "bun
           model: 'claude-sonnet-4-6',
           max_tokens: 500,
           system: systemPrompt,
-          messages: conversationMessages
+          messages: conversationMessages,
+          tools: [{ type: 'web_search_20250305', name: 'web_search' }]
         });
       } catch (e2) {
         console.error('Anthropic API xətası (ikinci cəhd də uğursuz):', e2.message);
