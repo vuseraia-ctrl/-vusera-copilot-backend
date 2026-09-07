@@ -1046,7 +1046,7 @@ ${isPremiumCompany ? `   ƏLAVƏ (Yaddaş — PREMIUM): Əgər istifadəçi "bun
                 .eq('employee_id', employee.id)
                 .eq('status', 'active')
                 .ilike('title', `%${actionData.meetingTitleOrPerson}%`)
-                .order('meeting_time', { ascending: true })
+                .order('start_datetime', { ascending: true })
                 .limit(1)
                 .maybeSingle();
 
@@ -1059,7 +1059,7 @@ ${isPremiumCompany ? `   ƏLAVƏ (Yaddaş — PREMIUM): Əgər istifadəçi "bun
               const prepMsg = await anthropic.messages.create({
                 model: 'claude-sonnet-4-6',
                 max_tokens: 600,
-                messages: [{ role: 'user', content: `Aşağıdakı məlumatlara əsasən, "${actionData.meetingTitleOrPerson}" ilə əlaqəli görüş üçün qısa bir hazırlıq brifinqi yaz (Azərbaycan dilində, maddələr halında):\n\nGörüş məlumatı: ${matchMeeting ? JSON.stringify({title: matchMeeting.title, time: matchMeeting.meeting_time}) : 'Tapılmadı'}\n\nƏlaqəli son email-lər: ${matchingEmails.length > 0 ? JSON.stringify(matchingEmails.map(e => ({from: e.fromName, subject: e.subject, snippet: e.snippet}))) : 'Tapılmadı'}` }]
+                messages: [{ role: 'user', content: `Aşağıdakı məlumatlara əsasən, "${actionData.meetingTitleOrPerson}" ilə əlaqəli görüş üçün qısa bir hazırlıq brifinqi yaz (Azərbaycan dilində, maddələr halında):\n\nGörüş məlumatı: ${matchMeeting ? JSON.stringify({title: matchMeeting.title, time: matchMeeting.start_datetime}) : 'Tapılmadı'}\n\nƏlaqəli son email-lər: ${matchingEmails.length > 0 ? JSON.stringify(matchingEmails.map(e => ({from: e.fromName, subject: e.subject, snippet: e.snippet}))) : 'Tapılmadı'}` }]
               });
               const prepText = prepMsg.content.map(b => b.text || '').join('');
               createdAction = { id: null, type: 'meeting_prep', title: `Görüş Hazırlığı: ${actionData.meetingTitleOrPerson}`, detail: prepText, priority: 'normal', status: 'completed' };
