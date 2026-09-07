@@ -853,17 +853,20 @@ ${isPremiumCompany ? `   ƏLAVƏ (Yaddaş — PREMIUM): Əgər istifadəçi "bun
           if (!answerText) answerText = 'Sorğunuz emal edilir...'; // Claude yalnız ACTION yazıbsa, boş qalmasın
 
           // ---- IDEMPOTENCY YOXLAMASI — eyni əməliyyatın təsadüfən 2 dəfə icra olunmasının qarşısını alır ----
+          // Qeyd: "sorğu" tipli (read-only) əməliyyatlar (meeting_prep, compare_documents) bu yoxlamadan azaddır —
+          // bunlar heç bir dəyişiklik etmir, təkrar sorulması zərərsizdir, hətta faydalı ola bilər (yeni məlumatla)
+          const idempotencyExemptTypes = ['meeting_prep', 'compare_documents'];
           const fingerprint = crypto.createHash('sha256')
             .update(`${employee.id}:${actionData.type}:${actionData.title || ''}:${JSON.stringify(actionData)}`)
             .digest('hex');
           const sixtySecondsAgo = new Date(Date.now() - 60 * 1000).toISOString();
-          const { data: existingFingerprint } = await supabase
+          const existingFingerprint = idempotencyExemptTypes.includes(actionData.type) ? null : (await supabase
             .from('action_fingerprints')
             .select('id')
             .eq('fingerprint', fingerprint)
             .eq('employee_id', employee.id)
             .gte('created_at', sixtySecondsAgo)
-            .maybeSingle();
+            .maybeSingle()).data;
 
           if (existingFingerprint) {
             // Bu, artıq son 60 saniyədə icra olunub — TƏKRAR ETMƏ, sadəcə xəbər ver
@@ -876,7 +879,9 @@ ${isPremiumCompany ? `   ƏLAVƏ (Yaddaş — PREMIUM): Əgər istifadəçi "bun
             };
           } else {
             // Barmaq izini qeydə al ki, təkrarını tanıya bilək
-            await supabase.from('action_fingerprints').insert({ fingerprint, employee_id: employee.id });
+            if (!idempotencyExemptTypes.includes(actionData.type)) {
+              await supabase.from('action_fingerprints').insert({ fingerprint, employee_id: employee.id });
+            }
 
           if (actionData.type === 'send_email') {
             // Email göndərmə - approval axınına yox, birbaşa Make.com-a gedir
