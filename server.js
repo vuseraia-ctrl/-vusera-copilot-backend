@@ -898,7 +898,8 @@ ${isPremiumCompany ? `   ƏLAVƏ (Yaddaş — PREMIUM): Əgər istifadəçi "bun
                 title: actionData.title,
                 start_datetime: actionData.startDateTime,
                 end_datetime: actionData.endDateTime,
-                calendar_event_id: meetingResult.eventId
+                calendar_event_id: meetingResult.eventId,
+                status: 'active'
               });
             }
 
@@ -911,7 +912,7 @@ ${isPremiumCompany ? `   ƏLAVƏ (Yaddaş — PREMIUM): Əgər istifadəçi "bun
                 match_company_id: employee.company_id,
                 match_count: 2
               });
-              if (prepMatches && prepMatches.length > 0 && prepMatches[0].similarity > 0.5) {
+              if (prepMatches && prepMatches.length > 0 && prepMatches[0].similarity > 0.5 && prepMatches[0].section_label) {
                 prepNote = ` · Hazırlıq: "${prepMatches[0].section_label}" sənədinə baxın`;
               }
             } catch (e) { /* prep axtarışı uğursuz olsa, sakitcə keç */ }
