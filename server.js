@@ -784,6 +784,7 @@ QAYDALAR:
    ƏLAVƏ (Hesabat): Əgər istifadəçi hesabat/report istəyirsə ("bu ayın IT ticketlərinin hesabatını hazırla" kimi), 2-addımlı prosesə tabedir: ADDIM 1-də nəyi əhatə edəcəyini (növ, status, müddət) göstər VƏ format seçimini soruş (PDF, yoxsa Google Sheets); ADDIM 2-də: ACTION:{"type":"generate_report","title":"Hesabat başlığı","reportType":"leave_request|it_ticket|expense_request və ya boş (hamısı)","reportStatus":"pending|approved|rejected və ya boş (hamısı)","sinceDays":30,"format":"pdf|sheets"}
    ƏLAVƏ (Kollegaya mesaj): Əgər istifadəçi "filan şəxsə deyin ki...", "filan şəxsə mesaj göndər" kimi bir şey desə, dərhal (təsdiq soruşmadan): ACTION:{"type":"send_message","recipientName":"qəbul edənin adı (mətndə deyildiyi kimi)","message":"ötürüləcək mesajın məzmunu"}
    ƏLAVƏ (Sənəd Müqayisəsi — PREMIUM): Əgər istifadəçi 2 sənədi müqayisə etmək istəsə ("bu iki müqaviləni müqayisə et" kimi), dərhal: ACTION:{"type":"compare_documents","doc1Title":"birinci sənədin başlığı (mətndə deyildiyi kimi)","doc2Title":"ikinci sənədin başlığı"}
+   ƏLAVƏ (Görüş Hazırlığı — PREMIUM): Əgər istifadəçi bir görüşə hazırlanmaq istəsə ("məni sabahkı görüşə hazırla", "filan görüşə hazırlıq" kimi), dərhal: ACTION:{"type":"meeting_prep","meetingTitleOrPerson":"görüşün başlığı və ya iştirakçının adı (mətndə deyildiyi kimi)"}
 ${isPremiumCompany ? `   ƏLAVƏ (Yaddaş — PREMIUM): Əgər istifadəçi "bunu xatırla", "bunu qeyd et" kimi bir şey desə, VƏ YA özün, işçinin təkrarlanan bir üstünlüyünü/vərdişini fərq etsən (məs: "mən həmişə PDF format istəyirəm"), cavabının sonunda (ACTION-dan AYRI, öz sətrində) bunu yaz: REMEMBER:{"fact":"qısa, aydın bir cümlə ilə fakt"}. Bunu, ancaq HƏQİQƏTƏN gələcəkdə faydalı olacaq bir fakt üçün istifadə et, hər cavabda YOX.` : ''}
    (İstifadəçi "excel", "sheets", "cədvəl" desə format="sheets"; "PDF" və ya heç nə deməsə format="pdf")
 4. Adi cavab üçün sonunda: SOURCE: Sənəd adı — Section X.X
@@ -1026,6 +1027,36 @@ ${isPremiumCompany ? `   ƏLAVƏ (Yaddaş — PREMIUM): Əgər istifadəçi "bun
                 detail: 'Uyğun aktiv görüş tapılmadı',
                 status: 'failed'
               };
+            }
+          } else if (actionData.type === 'meeting_prep') {
+            // PREMIUM: Görüş + əlaqəli email-ləri tapıb, Claude ilə brifinq hazırladır
+            const { data: companyForPrep } = await supabase.from('companies').select('plan_name').eq('id', employee.company_id).single();
+            if (companyForPrep?.plan_name !== 'Premium') {
+              createdAction = { id: null, type: 'meeting_prep', title: 'Bu funksiya Premium plan tələb edir', detail: 'Görüş hazırlığı, yalnız Premium planlı şirkətlər üçündür.', priority: 'normal', status: 'failed' };
+            } else {
+              const { data: matchMeeting } = await supabase
+                .from('meetings')
+                .select('*')
+                .eq('employee_id', employee.id)
+                .eq('status', 'active')
+                .ilike('title', `%${actionData.meetingTitleOrPerson}%`)
+                .order('meeting_time', { ascending: true })
+                .limit(1)
+                .maybeSingle();
+
+              const relatedEmails = await readRecentEmailsDirect(employee.company_id);
+              const matchingEmails = relatedEmails.filter(e =>
+                (e.fromName || '').toLowerCase().includes(actionData.meetingTitleOrPerson.toLowerCase()) ||
+                (e.subject || '').toLowerCase().includes(actionData.meetingTitleOrPerson.toLowerCase())
+              ).slice(0, 5);
+
+              const prepMsg = await anthropic.messages.create({
+                model: 'claude-sonnet-4-6',
+                max_tokens: 600,
+                messages: [{ role: 'user', content: `Aşağıdakı məlumatlara əsasən, "${actionData.meetingTitleOrPerson}" ilə əlaqəli görüş üçün qısa bir hazırlıq brifinqi yaz (Azərbaycan dilində, maddələr halında):\n\nGörüş məlumatı: ${matchMeeting ? JSON.stringify({title: matchMeeting.title, time: matchMeeting.meeting_time}) : 'Tapılmadı'}\n\nƏlaqəli son email-lər: ${matchingEmails.length > 0 ? JSON.stringify(matchingEmails.map(e => ({from: e.fromName, subject: e.subject, snippet: e.snippet}))) : 'Tapılmadı'}` }]
+              });
+              const prepText = prepMsg.content.map(b => b.text || '').join('');
+              createdAction = { id: null, type: 'meeting_prep', title: `Görüş Hazırlığı: ${actionData.meetingTitleOrPerson}`, detail: prepText, priority: 'normal', status: 'completed' };
             }
           } else if (actionData.type === 'compare_documents') {
             // PREMIUM: 2 sənədi tapıb, Claude ilə müqayisə etdirir
