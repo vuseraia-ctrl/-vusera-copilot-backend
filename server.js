@@ -1315,6 +1315,13 @@ ${isPremiumCompany ? `   ƏLAVƏ (Yaddaş — PREMIUM): Əgər istifadəçi "bun
       output_tokens: message.usage?.output_tokens || 0
     });
 
+    // TƏHLÜKƏSİZLİK ŞƏBƏKƏSİ: əgər hər hansı səbəbdən xam "ACTION:{...}" mətni cavabda qalıbsa
+    // (məs. nadir bir parse xətası), bunu istifadəçiyə göstərmədən təmizləyirik
+    if (answerText.includes('ACTION:')) {
+      answerText = answerText.replace(/ACTION:\s*\{[\s\S]*?\}/g, '').trim();
+      if (!answerText) answerText = 'Sorğunuz emal edildi.';
+    }
+
     res.json({ answer: answerText, employee: employee.name, role: employee.role, action: createdAction, suggestion });
 
   } catch (err) {
@@ -2289,23 +2296,88 @@ app.get('/dashboard/:companyId', requireAuth, async (req, res) => {  try {
     if (req.employee.company_id !== req.params.companyId) return res.status(403).json({ error: 'Bu şirkətə girişiniz yoxdur' });
     const companyId = req.params.companyId;
 
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+    const last24h = new Date(now.getTime() - 24*60*60*1000).toISOString();
+    const startOfThisWeek = new Date(now.getTime() - 7*24*60*60*1000).toISOString();
+    const startOfLastWeek = new Date(now.getTime() - 14*24*60*60*1000).toISOString();
+
     const [
       { count: employeeCount },
       { count: aiConversations },
       { count: requestCount },
       { count: pendingRequests },
       { count: itTickets },
-      { count: expenses }
+      { count: expenses },
+      { count: tasksExecuted24h },
+      { data: completedToday },
+      { count: approvedAllTime },
+      { count: rejectedAllTime },
+      { count: completedThisWeek },
+      { count: completedLastWeek },
+      { data: last7DaysRaw },
+      { count: documentCount },
+      { data: integrationsData }
     ] = await Promise.all([
       supabase.from('employees').select('*', { count: 'exact', head: true }).eq('company_id', companyId).eq('status', 'active'),
       supabase.from('chat_logs').select('*', { count: 'exact', head: true }).eq('company_id', companyId),
       supabase.from('action_requests').select('*', { count: 'exact', head: true }).eq('company_id', companyId),
       supabase.from('action_requests').select('*', { count: 'exact', head: true }).eq('company_id', companyId).eq('status', 'pending'),
       supabase.from('action_requests').select('*', { count: 'exact', head: true }).eq('company_id', companyId).eq('type', 'it_ticket'),
-      supabase.from('action_requests').select('*', { count: 'exact', head: true }).eq('company_id', companyId).eq('type', 'expense_request')
+      supabase.from('action_requests').select('*', { count: 'exact', head: true }).eq('company_id', companyId).eq('type', 'expense_request'),
+      supabase.from('action_requests').select('*', { count: 'exact', head: true }).eq('company_id', companyId).gte('created_at', last24h),
+      supabase.from('action_requests').select('type').eq('company_id', companyId).eq('status', 'approved').gte('approved_at', startOfToday),
+      supabase.from('action_requests').select('*', { count: 'exact', head: true }).eq('company_id', companyId).eq('status', 'approved'),
+      supabase.from('action_requests').select('*', { count: 'exact', head: true }).eq('company_id', companyId).eq('status', 'rejected'),
+      supabase.from('action_requests').select('*', { count: 'exact', head: true }).eq('company_id', companyId).eq('status', 'approved').gte('approved_at', startOfThisWeek),
+      supabase.from('action_requests').select('*', { count: 'exact', head: true }).eq('company_id', companyId).eq('status', 'approved').gte('approved_at', startOfLastWeek).lt('approved_at', startOfThisWeek),
+      supabase.from('action_requests').select('approved_at').eq('company_id', companyId).eq('status', 'approved').gte('approved_at', startOfLastWeek),
+      supabase.from('documents').select('*', { count: 'exact', head: true }).eq('company_id', companyId),
+      supabase.from('companies').select('google_client_id, slack_bot_token, hubspot_access_token').eq('id', companyId).single()
     ]);
 
-    res.json({ employeeCount, aiConversations, requestCount, pendingRequests, itTickets, expenses });
+    // Hər tapşırıq növünə görə, təxmini qənaət (dəqiqə) — sənaye ortalamasına əsasən
+    const TIME_SAVED_MINUTES = { leave_request: 12, it_ticket: 18, expense_request: 15, send_email: 8, create_meeting: 10, generate_report: 25, compare_documents: 20, meeting_prep: 15, send_message: 3 };
+    const hoursSavedTodayMinutes = (completedToday || []).reduce((sum, r) => sum + (TIME_SAVED_MINUTES[r.type] || 8), 0);
+    const hoursSavedToday = Math.round((hoursSavedTodayMinutes / 60) * 10) / 10;
+
+    // Komanda suretinin heftelik deyisimi (%) - bu heftə vs kecen hefte tamamlanan sorgular
+    let teamVelocityPercent = 0;
+    if (completedLastWeek > 0) {
+      teamVelocityPercent = Math.round(((completedThisWeek - completedLastWeek) / completedLastWeek) * 100);
+    } else if (completedThisWeek > 0) {
+      teamVelocityPercent = 100; // kecen hefte 0 idisə, hesablama mumkun deyil, "yeni aktivlik" kimi 100% goster
+    }
+
+    // AI deqiqliyi (%) - tesdiqlenen / (tesdiqlenen + reddedilen)
+    const totalDecided = (approvedAllTime || 0) + (rejectedAllTime || 0);
+    const aiAccuracy = totalDecided > 0 ? Math.round((approvedAllTime / totalDecided) * 100) : null;
+
+    // Son 7 gunun gunluk tamamlanma sayi (avtomatlaşdırma tempi qrafiki ucun)
+    const dailyBuckets = [0,0,0,0,0,0,0];
+    (last7DaysRaw || []).forEach(r => {
+      const daysAgo = Math.floor((now - new Date(r.approved_at)) / (24*60*60*1000));
+      const bucketIndex = 6 - Math.min(6, Math.max(0, daysAgo));
+      dailyBuckets[bucketIndex]++;
+    });
+
+    // Baglı inteqrasiya sayi - Google (Gmail+Calendar+Sheets+Drive = 4 xidmet sayilir), Slack, HubSpot
+    let connectedIntegrationsCount = 0;
+    if (integrationsData?.google_client_id) connectedIntegrationsCount += 4; // Gmail, Calendar, Sheets, Drive
+    if (integrationsData?.slack_bot_token) connectedIntegrationsCount += 1;
+    if (integrationsData?.hubspot_access_token) connectedIntegrationsCount += 1;
+
+    res.json({
+      employeeCount, aiConversations, requestCount, pendingRequests, itTickets, expenses,
+      tasksExecuted24h,
+      hoursSavedToday,
+      teamVelocityPercent,
+      aiAccuracy,
+      completedThisWeek,
+      weeklyAutomationPace: dailyBuckets,
+      documentCount,
+      connectedIntegrationsCount
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
