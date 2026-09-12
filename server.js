@@ -723,11 +723,9 @@ app.post('/ask', askLimiter, requireAuth, async (req, res) => {
     }
     conversationMessages.push({ role: 'user', content: question });
 
-    // 3.55) PREMIUM: Çoxqatlı yaddaş — işçi haqqında uzunmüddətli saxlanan faktları kontekstə əlavə et
+    // 3.55) Ağıllı yaddaş — işçi haqqında gələcəkdə faydalı faktları kontekstə əlavə et
     let employeeMemoryText = '';
-    const { data: companyForMemory } = await supabase.from('companies').select('plan_name').eq('id', employee.company_id).single();
-    const isPremiumCompany = companyForMemory?.plan_name === 'Premium';
-    if (isPremiumCompany) {
+    if (employee.company_id) {
       const { data: memories } = await supabase
         .from('employee_memory')
         .select('fact')
@@ -738,6 +736,9 @@ app.post('/ask', askLimiter, requireAuth, async (req, res) => {
         employeeMemoryText = '\nBU İŞÇİ HAQQINDA XATIRLADIĞIN FAKTLAR:\n' + memories.map(m => `- ${m.fact}`).join('\n') + '\n';
       }
     }
+    let companySettingsText = '';
+    const { data: companySettings } = await supabase.from('company_settings').select('sector,systems,approval_rules,approver_mapping,writing_tone,preferred_language').eq('company_id', employee.company_id).maybeSingle();
+    if (companySettings) companySettingsText = `\nŞİRKƏT AYARLARI:\n- Sektor: ${companySettings.sector || 'qeyd edilməyib'}\n- Sistemlər: ${Array.isArray(companySettings.systems) ? companySettings.systems.join(', ') : (companySettings.systems || 'qeyd edilməyib')}\n- Təsdiq tələb edən əməliyyatlar: ${companySettings.approval_rules || 'qeyd edilməyib'}\n- Təsdiqləyənlər: ${companySettings.approver_mapping || 'qeyd edilməyib'}\n- Yazı tonu: ${companySettings.writing_tone || 'peşəkar'}\n- Dil: ${companySettings.preferred_language || 'az'}\n`;
 
     // 3.6) Real "availability" yoxlaması — bu işçinin VERİLƏNLƏR BAZASINDAKI bütün
     // gözləyən/təsdiqlənmiş məzuniyyət tarixlərini gətiririk (yalnız söhbət yaddaşına güvənmək əvəzinə)
@@ -833,7 +834,7 @@ QAYDALAR:
    ƏLAVƏ (Kollegaya mesaj): Əgər istifadəçi "filan şəxsə deyin ki...", "filan şəxsə mesaj göndər" kimi bir şey desə, dərhal (təsdiq soruşmadan): ACTION:{"type":"send_message","recipientName":"qəbul edənin adı (mətndə deyildiyi kimi)","message":"ötürüləcək mesajın məzmunu"}
    ƏLAVƏ (Sənəd Müqayisəsi — PREMIUM): Əgər istifadəçi 2 sənədi müqayisə etmək istəsə ("bu iki müqaviləni müqayisə et" kimi), dərhal: ACTION:{"type":"compare_documents","doc1Title":"birinci sənədin başlığı (mətndə deyildiyi kimi)","doc2Title":"ikinci sənədin başlığı"}
    ƏLAVƏ (Görüş Hazırlığı — PREMIUM): Əgər istifadəçi bir görüşə hazırlanmaq istəsə ("məni sabahkı görüşə hazırla", "filan görüşə hazırlıq" kimi), dərhal: ACTION:{"type":"meeting_prep","meetingTitleOrPerson":"görüşün başlığı və ya iştirakçının adı (mətndə deyildiyi kimi)"}
-   ƏLAVƏ (Yaddaş — YALNIZ Premium şirkətlər üçün): Əgər istifadəçi "bunu xatırla", "bunu qeyd et" kimi bir şey desə, VƏ YA özün, işçinin təkrarlanan bir üstünlüyünü/vərdişini fərq etsən, VƏ şirkət Premium plandadırsa, cavabının sonunda (ACTION-dan AYRI, öz sətrində) bunu yaz: REMEMBER:{"fact":"qısa, aydın bir cümlə ilə fakt"}. Bunu, ancaq HƏQİQƏTƏN gələcəkdə faydalı olacaq bir fakt üçün istifadə et, hər cavabda YOX, və yalnız Premium şirkətlər üçün.
+   ƏLAVƏ (Ağıllı yaddaş): Əgər istifadəçi "bunu xatırla", "bunu qeyd et" kimi bir şey desə, VƏ YA təkrarlanan və gələcəkdə faydalı olacaq üstünlük/vərdiş bildirsə, cavabının sonunda (ACTION-dan AYRI, öz sətrində) bunu yaz: REMEMBER:{"fact":"qısa, aydın bir cümlə ilə fakt"}. Hər cavabda deyil, yalnız həqiqətən faydalı fakt üçün yaz.
    (İstifadəçi "excel", "sheets", "cədvəl" desə format="sheets"; "PDF" və ya heç nə deməsə format="pdf")
 4. Adi cavab üçün sonunda: SOURCE: Sənəd adı — Section X.X
 5. Qısa, 2-4 cümlə.
@@ -846,7 +847,7 @@ WEB AXTARIŞI: Sənin bir "web_search" alətin var. Bunu YALNIZ istifadəçinin 
 
     // DİNAMİK hissə (hər sorğuda dəyişir) — keşlənmir, hər dəfə tam göndərilir
     const dynamicContext = `İstifadəçi: ${employee.name}, ${employee.departments?.name || ''}, rol: ${employee.role}.
-${employeeMemoryText}
+${employeeMemoryText}${companySettingsText}
 BUGÜNKÜ TAM TARİX VƏ SAAT: ${new Date().toLocaleString('az-AZ', { timeZone: 'Asia/Baku', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })} (Bakı vaxtı). "Bugün", "sabah", "gələn həftə" kimi ifadələri HƏMİŞƏ bu tarixə əsasən hesabla — heç vaxt köhnə və ya təxmini il istifadə etmə.
 
 Aşağıda bu sualla əlaqəli, sistemin indi tapdığı sənəd parçaları var (əgər söhbətin əvvəlki hissəsi varsa, onu da nəzərə al — məsələn "bəs neçə gün?" kimi davam sualları):
@@ -2130,6 +2131,43 @@ app.get('/audit-log/:companyId', requireAuth, async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// Persistent task center (tenant-safe: company_id always comes from the authenticated employee)
+app.get('/tasks', requireAuth, async (req, res) => {
+  const { data, error } = await supabase.from('tasks').select('*').eq('company_id', req.employee.company_id).order('due_at', { ascending: true, nullsFirst: false }).order('created_at', { ascending: false });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data || []);
+});
+
+app.post('/tasks', requireAuth, async (req, res) => {
+  const { title, detail, priority = 'B', due_at, assigned_to, status = 'waiting', next_step, source = 'chat' } = req.body || {};
+  if (!title || !String(title).trim()) return res.status(400).json({ error: 'Tapşırıq adı tələb olunur' });
+  const { data, error } = await supabase.from('tasks').insert({ company_id: req.employee.company_id, employee_id: req.employee.id, title: String(title).trim(), detail, priority, due_at: due_at || null, assigned_to: assigned_to || null, status, next_step, source }).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.status(201).json(data);
+});
+
+app.patch('/tasks/:id', requireAuth, async (req, res) => {
+  const allowed = ['title','detail','priority','due_at','assigned_to','status','next_step'];
+  const updates = Object.fromEntries(Object.entries(req.body || {}).filter(([k]) => allowed.includes(k)));
+  const { data, error } = await supabase.from('tasks').update(updates).eq('id', req.params.id).eq('company_id', req.employee.company_id).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.get('/company-settings', requireAuth, async (req, res) => {
+  const { data, error } = await supabase.from('company_settings').select('*').eq('company_id', req.employee.company_id).maybeSingle();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data || {});
+});
+
+app.put('/company-settings', requireAuth, async (req, res) => {
+  const body = req.body || {};
+  const payload = { company_id: req.employee.company_id, sector: body.sector || null, systems: Array.isArray(body.systems) ? body.systems : String(body.systems || '').split(',').map(s => s.trim()).filter(Boolean), approval_rules: body.approval_rules || body.approvals || null, approver_mapping: body.approver_mapping || body.approver || null, writing_tone: body.writing_tone || body.tone || null, preferred_language: body.preferred_language || 'az' };
+  const { data, error } = await supabase.from('company_settings').upsert(payload).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
 });
 
 // İşçinin ÖZ sorğularını göstərir (URL-dəki ID-yə deyil, təsdiqlənmiş tokenə əsaslanır)
