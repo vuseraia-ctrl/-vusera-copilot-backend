@@ -190,8 +190,40 @@ VUSERA email, sənəd, daxili sorğu, görüş, təsdiq və iş axınlarını id
 Artıq bazada olanları təkrarlama: ${existingNames.join(', ') || 'yoxdur'}.
 Yalnız mövcud olduğuna yüksək əmin olduğun şirkətləri yaz. Şəxsi məlumat uydurma. Email, telefon, LinkedIn və sayt dəqiq bilinmirsə boş saxla. Hər lead Araşdırılır statusunda olmalıdır.
 Yalnız JSON qaytar: {"leads":[{"companyName":"","sector":"","priority":"A|B|C","contactName":"","contactRole":"","contactEmail":"","contactPhone":"","linkedinUrl":"","website":"","primaryChannel":"LinkedIn|Email|Instagram|Telefon","whyFit":"","pilotScenario":"","notes":"Avtomatik tapılıb; əlaqə məlumatları göndərmədən əvvəl yoxlanmalıdır"}]}`;
-      const response = await anthropic.messages.create({ model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6', max_tokens: 2400, temperature: 0.2, messages: [{ role: 'user', content: prompt }] });
-      const parsed = parseJson(response.content?.find(x => x.type === 'text')?.text || '');
+      const response = await anthropic.messages.create({
+        model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6',
+        max_tokens: 4096,
+        temperature: 0.2,
+        tools: [{
+          name: 'save_growth_leads',
+          description: 'Tapılmış VUSERA lead namizədlərini strukturlaşdırılmış formada qaytarır',
+          input_schema: {
+            type: 'object',
+            properties: {
+              leads: {
+                type: 'array',
+                maxItems: 20,
+                items: {
+                  type: 'object',
+                  properties: {
+                    companyName: { type: 'string' }, sector: { type: 'string' }, priority: { type: 'string', enum: ['A', 'B', 'C'] },
+                    contactName: { type: 'string' }, contactRole: { type: 'string' }, contactEmail: { type: 'string' }, contactPhone: { type: 'string' },
+                    linkedinUrl: { type: 'string' }, website: { type: 'string' }, primaryChannel: { type: 'string', enum: ['LinkedIn', 'Email', 'Instagram', 'Telefon'] },
+                    whyFit: { type: 'string' }, pilotScenario: { type: 'string' }, notes: { type: 'string' }
+                  },
+                  required: ['companyName', 'sector', 'priority', 'contactRole', 'primaryChannel', 'whyFit', 'pilotScenario']
+                }
+              }
+            },
+            required: ['leads']
+          }
+        }],
+        tool_choice: { type: 'tool', name: 'save_growth_leads' },
+        messages: [{ role: 'user', content: prompt }]
+      });
+      const toolResult = response.content?.find(x => x.type === 'tool_use' && x.name === 'save_growth_leads');
+      if (!toolResult?.input || !Array.isArray(toolResult.input.leads)) throw new Error('Lead siyahısı strukturlaşdırılmış formada alınmadı. Yenidən cəhd edin.');
+      const parsed = toolResult.input;
       const known = new Set(existingNames.map(x => x.trim().toLowerCase()));
       const rows = (Array.isArray(parsed.leads) ? parsed.leads : []).map(x => leadPayload({ ...x, status: 'Araşdırılır', nextStep: 'Əlaqə məlumatlarını yoxla' }, req.employee)).filter(x => x.company_name && !known.has(x.company_name.toLowerCase())).slice(0, limit);
       if (!rows.length) return res.json({ imported: 0, leads: [], message: 'Yeni unikal lead tapılmadı' });
