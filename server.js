@@ -169,6 +169,7 @@ async function exportToSheetsDirectGoogle(companyId, title, rows) {
   }
 }
 import { supabase, supabaseAuth, getEmbedding, chunkDocument } from './lib.js';
+import { registerGrowthAgencyRoutes } from './growth-agency.js';
 
 const app = express();
 app.set('trust proxy', 1); // Render bir proksi arxasında işlədiyi üçün, real IP-ni düzgün tanımaq üçün lazımdır
@@ -3432,6 +3433,9 @@ app.patch('/internal/subscriptions/:companyId', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ---- VUSERA AI Growth Agency ----
+registerGrowthAgencyRoutes({ app, supabase, anthropic, requireAuth, sendEmail: sendEmailViaMake });
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Bu ünvan tapılmadı' });
