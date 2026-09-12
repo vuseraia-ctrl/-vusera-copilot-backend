@@ -222,7 +222,7 @@ function isValidUUID(str) {
 // ---- VUSERA Actions Router — bütün Make.com inteqrasiyaları TƏK bir webhook-dan keçir ----
 // (Pulsuz Make planında yalnız 2 aktiv ssenari icazəli olduğu üçün, hamısını "action" sahəsinə görə
 // bir Router-də birləşdirmişik: send_email | check_calendar | create_meeting | read_emails)
-async function callVuseraRouter(action, payload, retriesLeft = 2) {
+async function callVuseraRouter(action, payload, retriesLeft = 1) {
   if (!process.env.MAKE_ROUTER_URL) return null;
   try {
     const response = await fetch(process.env.MAKE_ROUTER_URL, {
@@ -3157,11 +3157,9 @@ app.post('/proactive/check-reminders', async (req, res) => {
 // Naməlum yol (route) üçün aydın xəta — DİQQƏT: bu, həmişə BÜTÜN route-lardan SONRA olmalıdır!
 // ---- YALNIZ VUSERA SAHIBI ÜÇÜN — AI istifadə xərci izləməsi (heç bir müştəri Admin-i bunu görə bilməz) ----
 // Bu endpoint adi işçi girişi (requireAuth) ilə DEYİL, birbaşa API_SECRET ilə qorunur.
-app.get('/internal/cost-tracking', async (req, res) => {
+app.get('/internal/cost-tracking', requireAuth, async (req, res) => {
+  if (req.employee?.is_platform_owner !== true) return res.status(403).json({ error: 'İcazə yoxdur' });
   const provided = req.headers['x-owner-secret'];
-  if (!process.env.OWNER_SECRET || provided !== process.env.OWNER_SECRET) {
-    return res.status(403).json({ error: 'İcazə yoxdur' });
-  }
   try {
     const { data: logs } = await supabase
       .from('chat_logs')
