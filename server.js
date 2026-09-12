@@ -813,7 +813,7 @@ QAYDALAR:
    - it_ticket üçün category: "hardware" | "software" | "access" | "network"; priority: problemi ciddiliyinə görə seç (mes: "işləmir" = high, "yavaşdır" = normal); start_date/end_date lazım deyil, boş buraxa bilərsən
    - expense_request üçün category: "travel" | "meals" | "office" | "other"; start_date/end_date lazım deyil; "amount" sahəsinə MÜTLƏQ rəqəm (yalnız ədəd, valyuta olmadan) yaz, məs: 2500
    ƏLAVƏ (Email): Əgər istifadəçi email GÖNDƏRMƏK istəyirsə, 2-addımlı prosesə tabedir: ADDIM 1-də draft-ı göstər, təsdiq soruş; ADDIM 2-də: ACTION:{"type":"send_email","to":"email@ünvanı","subject":"...","title":"Email göndərildi","detail":"..."}
-   VACİB: "to" sahəsi YALNIZ şirkət işçi direktoriyasındakı real email ünvanlarından biri ola bilər. Direktoriyada yoxdursa, ünvan uydurma — "Bu şəxsin email ünvanı sistemdə tapılmadı" de.
+   VACİB: "to" sahəsi YA şirkət işçi direktoriyasındakı, YA DA "SON EMAİLLƏR" bölməsində göstərilən (yəni artıq bizə yazmış) real bir ünvan ola bilər — bu, xarici insanlara (müştəri, tələbə və s.) cavab yazmağa imkan verir. Heç bir uydurma ünvan istifadə etmə — yuxarıdakı iki mənbədən birində olmayan ünvan üçün, "Bu şəxsin email ünvanı sistemdə tapılmadı" de.
    ƏLAVƏ (Görüş): Əgər istifadəçi görüş/meeting yaratmaq istəyirsə ("sabah 3-də görüş qur" kimi), 2-addımlı prosesə tabedir: ADDIM 1-də tarix/saat/başlığı göstər, təsdiq soruş; ADDIM 2-də: ACTION:{"type":"create_meeting","title":"...","startDateTime":"YYYY-MM-DDTHH:mm:00+04:00","endDateTime":"YYYY-MM-DDTHH:mm:00+04:00","description":"..."}
    (Vaxt zonası həmişə +04:00 (Bakı) olsun, bitmə vaxtı göstərilməzsə başlanğıcdan 30 dəqiqə sonra qəbul et)
    ƏLAVƏ (Görüşü ləğv etmə): Əgər istifadəçi bir görüşü ləğv etmək istəyirsə, 2-addımlı prosesə tabedir: ADDIM 1-də hansı görüşü ləğv edəcəyini aydınlaşdır, təsdiq soruş; ADDIM 2-də: ACTION:{"type":"cancel_meeting","titleMatch":"görüşün başlığından açar söz","title":"Ləğv edildi","detail":"..."}
@@ -1441,14 +1441,25 @@ app.post('/emails/send', requireAuth, async (req, res) => {
     const { to, subject, body } = req.body;
     if (!to || !subject || !body) return res.status(400).json({ error: 'to, subject və body tələb olunur' });
 
-    // Yalnız real direktoriyadakı ünvanlara icazə ver (uydurma qarşısını almaq üçün)
-    const { data: match } = await supabase
+    // TƏHLÜKƏSİZLİK: "to" ünvanı YA daxili işçi direktoriyasında, YA DA
+    // yaxınlarda DAXİL OLAN bir email-in göndərəni olmalıdır (bu, xarici insanlara —
+    // məs. müştərilərə, tələbələrə — CAVAB yazmağa imkan verir, amma tam uydurma ünvana
+    // göndərməyin qarşısını alır, çünki həmin ünvan artıq REAL olaraq bizə yazıb)
+    const { data: employeeMatch } = await supabase
       .from('employees')
       .select('id')
       .eq('company_id', req.employee.company_id)
       .eq('email', to)
       .maybeSingle();
-    if (!match) return res.status(400).json({ error: 'Bu email ünvanı şirkət direktoriyasında tapılmadı' });
+
+    let isVerified = !!employeeMatch;
+    if (!isVerified) {
+      try {
+        const recentEmails = await readRecentEmailsDirect(req.employee.company_id);
+        isVerified = recentEmails.some(e => (e.fromEmail || '').toLowerCase() === to.toLowerCase());
+      } catch (e) { /* Gmail oxuna bilmirse, sadece iscilerle mehdudlashir */ }
+    }
+    if (!isVerified) return res.status(400).json({ error: 'Bu email ünvanı nə şirkət direktoriyasında, nə də son daxil olan emaillərdə tapılmadı' });
 
     const result = await sendEmailViaMake(req.employee.company_id, to, subject, body);
     res.json({ success: result.success });
