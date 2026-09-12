@@ -185,6 +185,9 @@ app.use((err, req, res, next) => {
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+// Her tapsiriq novu ucun, senaye ortalamasina esaslanan, teqribi qenaet (deqiqe)
+const TIME_SAVED_MINUTES = { leave_request: 12, it_ticket: 18, expense_request: 15, send_email: 8, create_meeting: 10, generate_report: 25, compare_documents: 20, meeting_prep: 15, send_message: 3, cancel_meeting: 5 };
+
 // Sadə UUID format yoxlaması (yanlış ID-lərə aydın xəta vermək üçün)
 function isValidUUID(str) {
   return typeof str === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
@@ -1322,7 +1325,28 @@ ${isPremiumCompany ? `   ƏLAVƏ (Yaddaş — PREMIUM): Əgər istifadəçi "bun
       if (!answerText) answerText = 'Sorğunuz emal edildi.';
     }
 
-    res.json({ answer: answerText, employee: employee.name, role: employee.role, action: createdAction, suggestion });
+    // Real etibarlilq balı — RAG uygunlugunun en yuksek deyeri (varsa)
+    const topSimilarity = allowedChunks.length > 0 ? Math.max(...allowedChunks.map(c => c.similarity || 0)) : null;
+    let confidenceLevel = null;
+    if (topSimilarity !== null) {
+      if (topSimilarity >= 0.75) confidenceLevel = 'high';
+      else if (topSimilarity >= 0.55) confidenceLevel = 'medium';
+      else confidenceLevel = 'low';
+    }
+
+    // Istifade edilen senedin REAL metadatasi (varsa) - ilk uygun parcanin sened melumati
+    let sourceDocMeta = null;
+    if (allowedChunks.length > 0) {
+      const { data: docMeta } = await supabase.from('documents').select('title, doc_code').eq('id', allowedChunks[0].document_id).maybeSingle();
+      if (docMeta) sourceDocMeta = { title: docMeta.title, docCode: docMeta.doc_code || null };
+    }
+
+    // Real is teyini uchun, tamamlanmis emeliyyatin qenaet etdiyi teqribi vaxt (deqiqe)
+    if (createdAction && createdAction.status !== 'failed' && createdAction.type) {
+      createdAction.timeSavedMinutes = TIME_SAVED_MINUTES[createdAction.type] || 8;
+    }
+
+    res.json({ answer: answerText, employee: employee.name, role: employee.role, action: createdAction, suggestion, confidenceLevel, topSimilarity, sourceDocMeta });
 
   } catch (err) {
     console.error(err);
@@ -2189,12 +2213,83 @@ app.post('/actions/:id/reject', requireAuth, async (req, res) => {
   }
 });
 
+// ---- Real Undo — son 5 deqiqe erzinde tesdiq/redd qerarini geri qaytarir ----
+app.post('/actions/:id/undo', requireAuth, async (req, res) => {
+  try {
+    const approver = req.employee;
+    const { data: actionCheck, error: actionCheckError } = await supabase
+      .from('action_requests').select('*').eq('id', req.params.id).single();
+    if (actionCheckError || !actionCheck) return res.status(404).json({ error: 'Sorğu tapılmadı — bu, geri qaytarıla bilməyən bir əməliyyat ola bilər (məs. göndərilmiş email)' });
+
+    if (actionCheck.company_id !== approver.company_id) {
+      return res.status(403).json({ error: 'Bu sorğu sizin şirkətinizə aid deyil' });
+    }
+    if (actionCheck.status !== 'approved' && actionCheck.status !== 'rejected') {
+      return res.status(400).json({ error: 'Yalnız təsdiqlənmiş/rədd edilmiş sorğular geri qaytarıla bilər' });
+    }
+    const decidedSecondsAgo = (Date.now() - new Date(actionCheck.approved_at).getTime()) / 1000;
+    if (decidedSecondsAgo > 300) {
+      return res.status(400).json({ error: 'Bu qərar 5 dəqiqədən çox əvvəl verilib, artıq geri qaytarıla bilməz' });
+    }
+
+    const { data: reverted, error: revertError } = await supabase
+      .from('action_requests')
+      .update({ status: 'pending', approved_by: null, approved_at: null, rejection_reason: null })
+      .eq('id', req.params.id)
+      .select()
+      .single();
+    if (revertError) throw revertError;
+
+    createNotification(reverted.company_id, reverted.employee_id,
+      `"${reverted.title}" sorğunuz üzrə qərar geri qaytarıldı, yenidən gözləmədədir.`, reverted.id);
+
+    res.json({ success: true, action: reverted });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Şirkətin "pending" (gözləyən) sorğularını göstərir — Manager Dashboard üçün əsasdır.
 // Icazə qaydası: Admin -> bütün şirkəti görür.
 //   leave_request/expense_request-in növündən asılı olmayaraq, DÜZGÜN departamentin manageri görməlidir:
 //   - leave_request -> işçinin ÖZ departamentinin manageri (öz komandan)
 //   - it_ticket -> HƏMİŞƏ IT departamentinin manageri (kim yaratsa da fərq etməz)
 //   - expense_request -> HƏMİŞƏ Finance departamentinin manageri
+// ---- Real Proaktiv Teklif — hec bir uydurma deyil, real şertlere esaslanir ----
+app.get('/proactive-suggestion/:employeeId', requireAuth, async (req, res) => {
+  try {
+    const employee = req.employee;
+    if (employee.id !== req.params.employeeId) return res.status(403).json({ error: 'Yalnız öz təklifinizi görə bilərsiniz' });
+
+    const now = new Date();
+    const in24h = new Date(now.getTime() + 24*60*60*1000).toISOString();
+
+    // 1) Yaxin 24 saatda gorush varmi?
+    const { data: upcomingMeeting } = await supabase
+      .from('meetings').select('title, start_datetime').eq('employee_id', employee.id).eq('status', 'active')
+      .gte('start_datetime', now.toISOString()).lte('start_datetime', in24h)
+      .order('start_datetime', { ascending: true }).limit(1).maybeSingle();
+    if (upcomingMeeting) {
+      return res.json({ suggestion: `"${upcomingMeeting.title}" görüşünüz yaxınlaşır. Hazırlıq brifinqi hazırlayım?`, actionPrompt: `Görüşə məni hazırla: ${upcomingMeeting.title}` });
+    }
+
+    // 2) Menecerdirse, 24 saatdan cox gozleyen tesdiq varmi?
+    if (employee.role === 'Manager' || employee.role === 'Admin') {
+      const yesterday = new Date(now.getTime() - 24*60*60*1000).toISOString();
+      const { data: oldPending } = await supabase
+        .from('action_requests').select('title').eq('company_id', employee.company_id).eq('status', 'pending')
+        .lte('created_at', yesterday).order('created_at', { ascending: true }).limit(1).maybeSingle();
+      if (oldPending) {
+        return res.json({ suggestion: `"${oldPending.title}" sorğusu 24 saatdan çoxdur gözləyir. Baxım gedim?`, actionPrompt: `Gözləyən təsdiqləri göstər` });
+      }
+    }
+
+    res.json({ suggestion: null });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/pending-actions/:companyId', requireAuth, async (req, res) => {
   try {
     const viewer = req.employee;
@@ -2336,8 +2431,7 @@ app.get('/dashboard/:companyId', requireAuth, async (req, res) => {  try {
       supabase.from('companies').select('google_client_id, slack_bot_token, hubspot_access_token').eq('id', companyId).single()
     ]);
 
-    // Hər tapşırıq növünə görə, təxmini qənaət (dəqiqə) — sənaye ortalamasına əsasən
-    const TIME_SAVED_MINUTES = { leave_request: 12, it_ticket: 18, expense_request: 15, send_email: 8, create_meeting: 10, generate_report: 25, compare_documents: 20, meeting_prep: 15, send_message: 3 };
+    // Hər tapşırıq növünə görə, təxmini qənaət (dəqiqə) — TIME_SAVED_MINUTES, faylın başında qlobal təyin edilib
     const hoursSavedTodayMinutes = (completedToday || []).reduce((sum, r) => sum + (TIME_SAVED_MINUTES[r.type] || 8), 0);
     const hoursSavedToday = Math.round((hoursSavedTodayMinutes / 60) * 10) / 10;
 
