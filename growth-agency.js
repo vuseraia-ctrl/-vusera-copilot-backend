@@ -4,10 +4,10 @@ const PRIORITIES = new Set(['A', 'B', 'C']);
 const STATUSES = new Set(['Əlaqə qurulmayıb', 'Araşdırılır', 'Təsdiq gözləyir', 'Əlaqə quruldu', 'Demo planlanıb', 'Qazanıldı', 'İtirildi']);
 const clean = (v, n = 2000) => typeof v === 'string' ? v.trim().slice(0, n) : '';
 const uuid = v => typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
-const canManage = e => e.role === 'Admin' || e.role === 'Manager' || e.role?.includes('Manager');
+const isPlatformOwner = e => e?.is_platform_owner === true;
 
-function requireManager(req, res, next) {
-  if (!canManage(req.employee)) return res.status(403).json({ error: 'Growth Agency üçün Manager və ya Admin icazəsi lazımdır' });
+function requirePlatformOwner(req, res, next) {
+  if (!isPlatformOwner(req.employee)) return res.status(403).json({ error: 'Growth Agency yalnız VUSERA platform owner üçün əlçatandır' });
   next();
 }
 
@@ -74,12 +74,12 @@ function leadPayload(body, employee) {
 export function registerGrowthAgencyRoutes({ app, supabase, anthropic, requireAuth, sendEmail }) {
   const aiLimit = rateLimit({ windowMs: 60000, max: 10, standardHeaders: true, legacyHeaders: false, message: { error: 'Agent sorğu limiti doldu. Bir dəqiqə sonra yenidən cəhd edin.' } });
 
-  app.get('/growth/agents/status', requireAuth, requireManager, (req, res) => res.json({
+  app.get('/growth/agents/status', requireAuth, requirePlatformOwner, (req, res) => res.json({
     agents: ['Growth Director', 'Lead Hunter', 'Sales Agent', 'Content Strategist', 'CRM Agent'].map((name, i) => ({ id: i + 1, name, status: 'online' })),
     externalActionsRequireApproval: true
   }));
 
-  app.get('/growth/overview', requireAuth, requireManager, async (req, res) => {
+  app.get('/growth/overview', requireAuth, requirePlatformOwner, async (req, res) => {
     try {
       const companyId = req.employee.company_id;
       const [{ data: leads, error: le }, { data: drafts, error: de }] = await Promise.all([
@@ -92,7 +92,7 @@ export function registerGrowthAgencyRoutes({ app, supabase, anthropic, requireAu
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
-  app.get('/growth/leads', requireAuth, requireManager, async (req, res) => {
+  app.get('/growth/leads', requireAuth, requirePlatformOwner, async (req, res) => {
     try {
       let q = supabase.from('growth_leads').select('*').eq('company_id', req.employee.company_id).order('priority').order('created_at', { ascending: false });
       if (PRIORITIES.has(req.query.priority)) q = q.eq('priority', req.query.priority);
@@ -105,7 +105,7 @@ export function registerGrowthAgencyRoutes({ app, supabase, anthropic, requireAu
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post('/growth/leads', requireAuth, requireManager, async (req, res) => {
+  app.post('/growth/leads', requireAuth, requirePlatformOwner, async (req, res) => {
     try {
       const payload = leadPayload(req.body, req.employee);
       if (!payload.company_name) return res.status(400).json({ error: 'companyName tələb olunur' });
@@ -116,7 +116,7 @@ export function registerGrowthAgencyRoutes({ app, supabase, anthropic, requireAu
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post('/growth/leads/import', requireAuth, requireManager, async (req, res) => {
+  app.post('/growth/leads/import', requireAuth, requirePlatformOwner, async (req, res) => {
     try {
       if (!Array.isArray(req.body.leads) || !req.body.leads.length) return res.status(400).json({ error: 'leads array tələb olunur' });
       if (req.body.leads.length > 100) return res.status(400).json({ error: 'Bir dəfəyə maksimum 100 lead' });
@@ -128,7 +128,7 @@ export function registerGrowthAgencyRoutes({ app, supabase, anthropic, requireAu
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
-  app.patch('/growth/leads/:id', requireAuth, requireManager, async (req, res) => {
+  app.patch('/growth/leads/:id', requireAuth, requirePlatformOwner, async (req, res) => {
     try {
       const lead = await tenantLead(supabase, req.params.id, req.employee.company_id);
       if (!lead) return res.status(404).json({ error: 'Lead tapılmadı' });
@@ -147,7 +147,7 @@ export function registerGrowthAgencyRoutes({ app, supabase, anthropic, requireAu
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
-  app.delete('/growth/leads/:id', requireAuth, requireManager, async (req, res) => {
+  app.delete('/growth/leads/:id', requireAuth, requirePlatformOwner, async (req, res) => {
     try {
       const lead = await tenantLead(supabase, req.params.id, req.employee.company_id);
       if (!lead) return res.status(404).json({ error: 'Lead tapılmadı' });
@@ -158,7 +158,7 @@ export function registerGrowthAgencyRoutes({ app, supabase, anthropic, requireAu
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post('/growth/leads/:id/generate-draft', aiLimit, requireAuth, requireManager, async (req, res) => {
+  app.post('/growth/leads/:id/generate-draft', aiLimit, requireAuth, requirePlatformOwner, async (req, res) => {
     try {
       const lead = await tenantLead(supabase, req.params.id, req.employee.company_id);
       if (!lead) return res.status(404).json({ error: 'Lead tapılmadı' });
@@ -173,7 +173,7 @@ export function registerGrowthAgencyRoutes({ app, supabase, anthropic, requireAu
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
-  app.get('/growth/drafts', requireAuth, requireManager, async (req, res) => {
+  app.get('/growth/drafts', requireAuth, requirePlatformOwner, async (req, res) => {
     try {
       let q = supabase.from('growth_drafts').select('*, growth_leads(company_name, contact_name, contact_email, primary_channel)').eq('company_id', req.employee.company_id).order('created_at', { ascending: false });
       if (req.query.status) q = q.eq('status', clean(req.query.status, 40));
@@ -183,7 +183,7 @@ export function registerGrowthAgencyRoutes({ app, supabase, anthropic, requireAu
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post('/growth/drafts/:id/approve', requireAuth, requireManager, async (req, res) => {
+  app.post('/growth/drafts/:id/approve', requireAuth, requirePlatformOwner, async (req, res) => {
     try {
       if (!uuid(req.params.id)) return res.status(400).json({ error: 'Yanlış draft ID' });
       const { data: draft, error: fe } = await supabase.from('growth_drafts').select('*, growth_leads(company_name)').eq('id', req.params.id).eq('company_id', req.employee.company_id).maybeSingle();
@@ -198,7 +198,7 @@ export function registerGrowthAgencyRoutes({ app, supabase, anthropic, requireAu
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post('/growth/drafts/:id/reject', requireAuth, requireManager, async (req, res) => {
+  app.post('/growth/drafts/:id/reject', requireAuth, requirePlatformOwner, async (req, res) => {
     try {
       if (!uuid(req.params.id)) return res.status(400).json({ error: 'Yanlış draft ID' });
       const { data: draft, error: fe } = await supabase.from('growth_drafts').select('id, lead_id').eq('id', req.params.id).eq('company_id', req.employee.company_id).maybeSingle();
@@ -213,9 +213,8 @@ export function registerGrowthAgencyRoutes({ app, supabase, anthropic, requireAu
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post('/growth/drafts/:id/send', requireAuth, requireManager, async (req, res) => {
+  app.post('/growth/drafts/:id/send', requireAuth, requirePlatformOwner, async (req, res) => {
     try {
-      if (req.employee.role !== 'Admin') return res.status(403).json({ error: 'Cold-email yalnız Admin tərəfindən göndərilə bilər' });
       if (!uuid(req.params.id)) return res.status(400).json({ error: 'Yanlış draft ID' });
       const { data: draft, error } = await supabase.from('growth_drafts').select('*, growth_leads(*)').eq('id', req.params.id).eq('company_id', req.employee.company_id).maybeSingle();
       if (error) throw error; if (!draft) return res.status(404).json({ error: 'Draft tapılmadı' });
@@ -238,7 +237,7 @@ export function registerGrowthAgencyRoutes({ app, supabase, anthropic, requireAu
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
-  app.post('/growth/sprints', aiLimit, requireAuth, requireManager, async (req, res) => {
+  app.post('/growth/sprints', aiLimit, requireAuth, requirePlatformOwner, async (req, res) => {
     try {
       const amount = Math.min(Math.max(Number(req.body.limit) || 5, 1), 5);
       const { data: leads, error } = await supabase.from('growth_leads').select('*').eq('company_id', req.employee.company_id).eq('status', 'Əlaqə qurulmayıb').order('priority').limit(amount);
@@ -262,7 +261,7 @@ export function registerGrowthAgencyRoutes({ app, supabase, anthropic, requireAu
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
-  app.get('/growth/activities', requireAuth, requireManager, async (req, res) => {
+  app.get('/growth/activities', requireAuth, requirePlatformOwner, async (req, res) => {
     try {
       const { data, error } = await supabase.from('growth_activities').select('*').eq('company_id', req.employee.company_id).order('created_at', { ascending: false }).limit(Math.min(Number(req.query.limit) || 50, 200));
       if (error) throw error;
