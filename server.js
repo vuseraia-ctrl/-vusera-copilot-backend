@@ -725,6 +725,7 @@ app.post('/ask', askLimiter, requireAuth, async (req, res) => {
 
     // 3.55) Ağıllı yaddaş — işçi haqqında gələcəkdə faydalı faktları kontekstə əlavə et
     let employeeMemoryText = '';
+    const isPremiumCompany = true;
     if (employee.company_id) {
       const { data: memories } = await supabase
         .from('employee_memory')
