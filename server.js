@@ -188,20 +188,21 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 // Her tapsiriq novu ucun, senaye ortalamasina esaslanan, teqribi qenaet (deqiqe)
 const TIME_SAVED_MINUTES = { leave_request: 12, it_ticket: 18, expense_request: 15, send_email: 8, create_meeting: 10, generate_report: 25, compare_documents: 20, meeting_prep: 15, send_message: 3, cancel_meeting: 5 };
 
-// Sade, EHTIYATLI bir tesnifat: yalnix ACHIQ-AYDIN sade mesajlari (salamlaşma ve s.)
-// ucuz Haiku modelinə yönləndirir. Hər hansı bir şübhə olduqda, TƏHLÜKƏSİZ tərəf kimi
-// Sonnet-də qalır — keyfiyyətdən güzəştə getmirik.
+// Genişlendirilmiş tesnifat: QISA ve IS elaqeli acar soz OLMAYAN mesajlar (adi soḣbet) Haiku-ya gedir.
+// Herhansi bir IS/sorğu acar sozu varsa (mezuniyyet, ticket, sened ve s.), HEMISHE Sonnet-de qalir —
+// bu, tehlukesiz terefdir, chunki bu acar sozler REAL emeliyyat/bilik bazasi lazim olduğunu gosterir.
 function isSimpleGreeting(text) {
   const t = text.trim().toLowerCase();
-  if (t.length > 25) return false; // uzun mesajlar hec vaxt "sade" hesab edilmir
-  const simplePatterns = [
-    /^salam,?\s*(necesen|necəsən|vusera)?[!.?]*$/i,
-    /^(hi|hello|hey)[!.?]*$/i,
-    /^(sag ?ol|sağ ?ol|tesekk[uü]r[l]?[eə]r?)[!.?]*$/i,
-    /^(thanks|thank you)[!.?]*$/i,
-    /^(bye|sagolun|görüşərik)[!.?]*$/i
+  if (t.length > 60) return false; // uzun mesajlar hec vaxt "sade chat" hesab edilmir
+  const workKeywords = [
+    'məzuniyyət', 'mezuniyyet', 'ticket', 'sorğu', 'sorgu', 'sənəd', 'senedi', 'sened',
+    'hesabat', 'təsdiq', 'tesdiq', 'email', 'görüş', 'gorush', 'meeting', 'xərc', 'xerc',
+    'policy', 'siyasət', 'siyaset', 'qayda', 'calendar', 'slack', 'crm', 'audit', 'crm',
+    'yarat', 'göndər', 'gonder', 'planla', 'müqayisə', 'muqayise', 'hazırla', 'hazirla',
+    'laptop', 'komputer', 'wifi', 'şəbəkə', 'sebeke', 'problem', 'xəbərdar', 'xeberdar'
   ];
-  return simplePatterns.some(p => p.test(t));
+  if (workKeywords.some(k => t.includes(k))) return false;
+  return true; // qisa, is-elaqeli acar sozu olmayan mesaj -> Haiku (adi sohbet)
 }
 
 // Sadə UUID format yoxlaması (yanlış ID-lərə aydın xəta vermək üçün)
