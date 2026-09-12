@@ -207,7 +207,7 @@ Nəticəni qısa və strukturlaşdırılmış ver: şirkət, sektor, prioritet, 
           type: 'web_search_20250305',
           name: 'web_search',
           max_uses: 5,
-          user_location: { type: 'approximate', city: 'Baku', region: 'Baku', country: 'AZ', timezone: 'Asia/Baku' }
+          user_location: { type: 'approximate', city: 'Baku', region: 'Baku', timezone: 'Asia/Baku' }
         }],
         messages: [{ role: 'user', content: prompt }]
       });
