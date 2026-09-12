@@ -627,20 +627,26 @@ app.post('/ask', askLimiter, requireAuth, async (req, res) => {
       });
     }
 
-    // 1.6) AYLIQ İSTİFADƏ LİMİTİ — plan növünə görə (Premium, Business-dən 2 dəfə çox limitə malikdir)
+    // 1.6) AYLIQ İSTİFADƏ LİMİTİ — həm sorğu sayı, həm real TOKEN istifadəsi əsasında (Premium, Business-dən 2 dəfə çox limitə malikdir)
     const MONTHLY_QUERY_LIMITS = { Premium: 6000, Business: 3000 };
+    const MONTHLY_TOKEN_LIMITS = { Premium: 50000000, Business: 25000000 }; // 25M / 50M token — real xərci limitləyən əsas ölçü
     const monthlyLimit = MONTHLY_QUERY_LIMITS[companyStatus?.plan_name] || MONTHLY_QUERY_LIMITS.Business;
+    const monthlyTokenLimit = MONTHLY_TOKEN_LIMITS[companyStatus?.plan_name] || MONTHLY_TOKEN_LIMITS.Business;
     const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
-    const { count: monthlyUsageCount } = await supabase
-      .from('chat_logs')
-      .select('*', { count: 'exact', head: true })
-      .eq('company_id', employee.company_id)
-      .gte('created_at', startOfMonth);
-    if (monthlyUsageCount !== null && monthlyUsageCount >= monthlyLimit) {
+    const [{ count: monthlyUsageCount }, { data: tokenRows }] = await Promise.all([
+      supabase.from('chat_logs').select('*', { count: 'exact', head: true }).eq('company_id', employee.company_id).gte('created_at', startOfMonth),
+      supabase.from('chat_logs').select('input_tokens, output_tokens').eq('company_id', employee.company_id).gte('created_at', startOfMonth)
+    ]);
+    const monthlyTokenTotal = (tokenRows || []).reduce((sum, r) => sum + (r.input_tokens || 0) + (r.output_tokens || 0), 0);
+
+    if ((monthlyUsageCount !== null && monthlyUsageCount >= monthlyLimit) || monthlyTokenTotal >= monthlyTokenLimit) {
       const isAdminViewer = employee.role === 'Admin';
+      const reachedTokenLimit = monthlyTokenTotal >= monthlyTokenLimit;
       return res.status(429).json({
         error: isAdminViewer
-          ? `Bu ay üçün sorğu limitinə (${monthlyLimit}) çatılıb. Limitin artırılması üçün VUSERA ilə əlaqə saxlayın.`
+          ? (reachedTokenLimit
+              ? `Bu ay üçün token istifadə limitinə (${(monthlyTokenLimit/1000000).toFixed(0)}M) çatılıb. Limitin artırılması üçün VUSERA ilə əlaqə saxlayın.`
+              : `Bu ay üçün sorğu limitinə (${monthlyLimit}) çatılıb. Limitin artırılması üçün VUSERA ilə əlaqə saxlayın.`)
           : 'VUSERA bu ay üçün istifadə limitinə çatıb. Zəhmət olmasa Admin ilə əlaqə saxlayın.'
       });
     }
@@ -851,12 +857,12 @@ ${emailsText ? `SON EMAİLLƏR (Gmail-dən indi oxunub):\n${emailsText}\n` : ''}
 ${directoryText || '(direktoriya boşdur)'}`;
 
     // 6) Claude-dan cavab al (söhbət tarixçəsi ilə birlikdə) — keçici xətalar üçün 1 dəfə təkrar cəhd
-    // Sade salamlaşma/tesekkur mesajlari, ucuz Haiku modeline yonlendirilir - real is/sorgu her zaman Sonnet-de qalir
-    const selectedModel = isSimpleGreeting(question) ? 'claude-haiku-4-5-20251001' : 'claude-sonnet-4-6';
+    // Qerar: Haiku yonlendirmesi legv edildi - butun sorgular Sonnet-de qalir (etibarlilq ustunluk teskil edir),
+    // xerc idareetmesi bunun evezine QIYMET ve TOKEN LIMITI vasitesile aparilir
     let message;
     try {
       message = await anthropic.messages.create({
-        model: selectedModel,
+        model: 'claude-sonnet-4-6',
         max_tokens: 500,
         system: [
           { type: 'text', text: staticInstructions, cache_control: { type: 'ephemeral' } },
@@ -870,7 +876,7 @@ ${directoryText || '(direktoriya boşdur)'}`;
       try {
         await new Promise(r => setTimeout(r, 700));
         message = await anthropic.messages.create({
-          model: selectedModel,
+          model: 'claude-sonnet-4-6',
           max_tokens: 500,
           system: [
             { type: 'text', text: staticInstructions, cache_control: { type: 'ephemeral' } },
@@ -888,7 +894,7 @@ ${directoryText || '(direktoriya boşdur)'}`;
     let answerText = message.content.map(b => b.text || '').join('');
     // DIAQNOSTIKA: Prompt Caching-in real isleyib-islemediyini derhal Render logларinda goremek ucun
     if (message.usage) {
-      console.log(`[CACHE DEBUG] cache_creation: ${message.usage.cache_creation_input_tokens || 0}, cache_read: ${message.usage.cache_read_input_tokens || 0}, input: ${message.usage.input_tokens}, model: ${selectedModel}`);
+      console.log(`[CACHE DEBUG] cache_creation: ${message.usage.cache_creation_input_tokens || 0}, cache_read: ${message.usage.cache_read_input_tokens || 0}, input: ${message.usage.input_tokens}`);
     }
     let sourceType = 'answer';
     let createdAction = null;
@@ -1411,7 +1417,7 @@ ${directoryText || '(direktoriya boşdur)'}`;
       createdAction.timeSavedMinutes = TIME_SAVED_MINUTES[createdAction.type] || 8;
     }
 
-    res.json({ answer: answerText, employee: employee.name, role: employee.role, action: createdAction, suggestion, confidenceLevel, topSimilarity, sourceDocMeta, modelUsed: selectedModel.includes('haiku') ? 'Haiku' : 'Sonnet' });
+    res.json({ answer: answerText, employee: employee.name, role: employee.role, action: createdAction, suggestion, confidenceLevel, topSimilarity, sourceDocMeta, modelUsed: 'Sonnet' });
 
   } catch (err) {
     console.error(err);
