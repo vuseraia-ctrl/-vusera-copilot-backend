@@ -1403,7 +1403,7 @@ ${directoryText || '(direktoriya boşdur)'}`;
       createdAction.timeSavedMinutes = TIME_SAVED_MINUTES[createdAction.type] || 8;
     }
 
-    res.json({ answer: answerText, employee: employee.name, role: employee.role, action: createdAction, suggestion, confidenceLevel, topSimilarity, sourceDocMeta });
+    res.json({ answer: answerText, employee: employee.name, role: employee.role, action: createdAction, suggestion, confidenceLevel, topSimilarity, sourceDocMeta, modelUsed: selectedModel.includes('haiku') ? 'Haiku' : 'Sonnet' });
 
   } catch (err) {
     console.error(err);
