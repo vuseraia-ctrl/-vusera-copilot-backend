@@ -1433,6 +1433,20 @@ app.get('/emails', requireAuth, async (req, res) => {
   }
 });
 
+// Gələn emailləri AI ilə kateqoriyalara ayırır — cavab tələb edənləri və follow-up-ları tez tapmaq üçün.
+app.post('/emails/analyze', requireAuth, async (req, res) => {
+  try {
+    const emails = Array.isArray(req.body?.emails) ? req.body.emails.slice(0, 30) : await readRecentEmails(req.employee.company_id);
+    if (!emails.length) return res.json({ analyses: [] });
+    const compact = emails.map((e, i) => ({ index:i, from:e.fromName || e.fromEmail || '', subject:e.subject || '', snippet:(e.snippet || '').slice(0, 700) }));
+    const prompt = `Bu email siyahısını Azərbaycan dilində analiz et. Hər email üçün yalnız JSON qaytar: [{"index":0,"category":"positive|negative|interested|later|reply_required|newsletter|automatic|information","needsReply":true,"priority":"high|medium|low","reason":"qısa səbəb","nextStep":"qısa növbəti addım"}]. Heç bir markdown və əlavə mətn yazma.\n\n${JSON.stringify(compact)}`;
+    const message = await anthropic.messages.create({ model:'claude-sonnet-4-6', max_tokens:1800, system:'Sən şirkət email triage köməkçisisən. Yalnız valid JSON qaytar.', messages:[{role:'user',content:prompt}] });
+    const raw = message.content.map(b=>b.text||'').join('').replace(/^```json\s*|\s*```$/g,'').trim();
+    let analyses; try { analyses = JSON.parse(raw); } catch { return res.status(502).json({ error:'Email analizi JSON formatında qaytarılmadı' }); }
+    res.json({ analyses: Array.isArray(analyses) ? analyses : [] });
+  } catch (err) { console.error('Email analiz xətası:', err.message); res.status(500).json({ error:'Email analizi hazırda mümkün deyil' }); }
+});
+
 // Email paneli üçün — birbaşa email göndərir (chat axınından kənar, sadə forma üçün)
 app.post('/emails/send', requireAuth, async (req, res) => {
   try {
