@@ -861,7 +861,7 @@ ${emailsText ? `SON EMAİLLƏR (Gmail-dən indi oxunub):\n${emailsText}\n` : ''}
 ŞİRKƏT İŞÇİ DİREKTORİYASI (real email ünvanları — email göndərəndə YALNIZ buradakı ünvanlardan istifadə et, HEÇ VAXT ünvan uydurma):
 ${directoryText || '(direktoriya boşdur)'}`;
 
-    // 6) Claude-dan cavab al (söhbət tarixçəsi ilə birlikdə) — keçici xətalar üçün 1 dəfə təkrar cəhd
+    // 6) Claude-dan cavab al (söhbət tarixçəsi ilə birlikdə) — bir cəhd
     // Qerar: Haiku yonlendirmesi legv edildi - butun sorgular Sonnet-de qalir (etibarlilq ustunluk teskil edir),
     // xerc idareetmesi bunun evezine QIYMET ve TOKEN LIMITI vasitesile aparilir
     let message;
@@ -877,23 +877,8 @@ ${directoryText || '(direktoriya boşdur)'}`;
         tools: [{ type: 'web_search_20250305', name: 'web_search' }]
       });
     } catch (e) {
-      console.error('Anthropic API xətası, yenidən cəhd edilir:', e.message);
-      try {
-        await new Promise(r => setTimeout(r, 700));
-        message = await anthropic.messages.create({
-          model: 'claude-sonnet-4-6',
-          max_tokens: 500,
-          system: [
-            { type: 'text', text: staticInstructions, cache_control: { type: 'ephemeral' } },
-            { type: 'text', text: dynamicContext }
-          ],
-          messages: conversationMessages,
-          tools: [{ type: 'web_search_20250305', name: 'web_search' }]
-        });
-      } catch (e2) {
-        console.error('Anthropic API xətası (ikinci cəhd də uğursuz):', e2.message);
-        return res.status(503).json({ error: 'VUSERA hazırda cavab verə bilmir. Bir neçə saniyə sonra yenidən cəhd edin.' });
-      }
+      console.error('Anthropic API xətası:', e.message);
+      return res.status(503).json({ error: 'VUSERA hazırda cavab verə bilmir. Bir neçə saniyə sonra yenidən cəhd edin.' });
     }
 
     let answerText = message.content.map(b => b.text || '').join('');
@@ -1391,7 +1376,9 @@ ${directoryText || '(direktoriya boşdur)'}`;
       answer: answerText,
       source_type: sourceType,
       input_tokens: message.usage?.input_tokens || 0,
-      output_tokens: message.usage?.output_tokens || 0
+      output_tokens: message.usage?.output_tokens || 0,
+      cache_creation_input_tokens: message.usage?.cache_creation_input_tokens || 0,
+      cache_read_input_tokens: message.usage?.cache_read_input_tokens || 0
     });
 
     // TƏHLÜKƏSİZLİK ŞƏBƏKƏSİ: əgər hər hansı səbəbdən xam "ACTION:{...}" mətni cavabda qalıbsa
@@ -3163,21 +3150,24 @@ app.get('/internal/cost-tracking', requireAuth, async (req, res) => {
   try {
     const { data: logs } = await supabase
       .from('chat_logs')
-      .select('company_id, input_tokens, output_tokens, companies(name)');
+      .select('company_id, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, companies(name)');
 
     // Claude Sonnet qiymətləri: $3/milyon input token, $15/milyon output token (təxmini)
     const byCompany = {};
     for (const log of logs || []) {
       const cid = log.company_id;
-      if (!byCompany[cid]) byCompany[cid] = { companyName: log.companies?.name || 'Naməlum', inputTokens: 0, outputTokens: 0, conversationCount: 0 };
+      if (!byCompany[cid]) byCompany[cid] = { companyName: log.companies?.name || 'Naməlum', inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, conversationCount: 0 };
       byCompany[cid].inputTokens += log.input_tokens || 0;
       byCompany[cid].outputTokens += log.output_tokens || 0;
+      byCompany[cid].cacheCreationInputTokens += log.cache_creation_input_tokens || 0;
+      byCompany[cid].cacheReadInputTokens += log.cache_read_input_tokens || 0;
       byCompany[cid].conversationCount += 1;
     }
 
     const result = Object.values(byCompany).map(c => ({
       ...c,
-      estimatedCostUSD: ((c.inputTokens / 1000000) * 3 + (c.outputTokens / 1000000) * 15).toFixed(4)
+      // Sonnet təxmini tarifləri: input $3/M, output $15/M, cache write $3.75/M, cache read $0.30/M.
+      estimatedCostUSD: (((Math.max(0, c.inputTokens - c.cacheCreationInputTokens - c.cacheReadInputTokens) / 1000000) * 3) + ((c.cacheCreationInputTokens / 1000000) * 3.75) + ((c.cacheReadInputTokens / 1000000) * 0.30) + ((c.outputTokens / 1000000) * 15)).toFixed(4)
     }));
 
     const totalCostUSD = result.reduce((sum, c) => sum + parseFloat(c.estimatedCostUSD), 0).toFixed(2);
