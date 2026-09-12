@@ -2256,6 +2256,57 @@ app.post('/actions/:id/undo', requireAuth, async (req, res) => {
 //   - it_ticket -> HƏMİŞƏ IT departamentinin manageri (kim yaratsa da fərq etməz)
 //   - expense_request -> HƏMİŞƏ Finance departamentinin manageri
 // ---- Real Proaktiv Teklif — hec bir uydurma deyil, real şertlere esaslanir ----
+// ---- Real Fokus Planı — 4 kateqoriyaya, REAL melumatlara esaslanaraq bolur ----
+app.get('/focus-plan/:employeeId', requireAuth, async (req, res) => {
+  try {
+    const employee = req.employee;
+    if (employee.id !== req.params.employeeId) return res.status(403).json({ error: 'Yalnız öz planınızı görə bilərsiniz' });
+
+    const now = new Date();
+    const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59).toISOString();
+    const urgentKeywords = ['təcili', 'urgent', 'asap', 'dərhal', 'important', 'vacib'];
+
+    const [emails, { data: todayMeetings }, { data: pendingForMe }] = await Promise.all([
+      readRecentEmailsDirect(employee.company_id).catch(() => []),
+      supabase.from('meetings').select('title, start_datetime').eq('employee_id', employee.id).eq('status', 'active')
+        .gte('start_datetime', now.toISOString()).lte('start_datetime', todayEnd),
+      (employee.role === 'Manager' || employee.role === 'Admin')
+        ? supabase.from('action_requests').select('id, title, priority, created_at').eq('company_id', employee.company_id).eq('status', 'pending').order('created_at', { ascending: true })
+        : Promise.resolve({ data: [] })
+    ]);
+
+    const urgentEmails = (emails || []).filter(e => {
+      const text = ((e.subject||'') + ' ' + (e.snippet||'')).toLowerCase();
+      return urgentKeywords.some(k => text.includes(k));
+    });
+    const nonUrgentEmails = (emails || []).filter(e => !urgentEmails.includes(e));
+    const pending = pendingForMe || [];
+    const urgentPending = pending.filter(p => p.priority === 'high');
+    const normalPending = pending.filter(p => p.priority !== 'high');
+
+    const nowItems = [
+      ...urgentEmails.slice(0,2).map(e => `Təcili email: "${e.subject}"`),
+      ...urgentPending.slice(0,2).map(p => `Təcili təsdiq: "${p.title}"`)
+    ];
+    const todayItems = [
+      ...(todayMeetings||[]).map(m => `Görüş: "${m.title}"`),
+      ...normalPending.slice(0,2).map(p => `Təsdiq: "${p.title}"`)
+    ];
+    const laterItems = nonUrgentEmails.slice(0,3).map(e => `Email: "${e.subject}"`);
+    const vuseraCanDo = nonUrgentEmails.length > 0 ? [`${nonUrgentEmails.length} email üçün follow-up draft hazırlaya bilərəm`] : [];
+
+    res.json({
+      now: nowItems.length > 0 ? nowItems : ['Təcili iş yoxdur'],
+      today: todayItems.length > 0 ? todayItems : ['Bugün üçün planlaşdırılan iş yoxdur'],
+      later: laterItems.length > 0 ? laterItems : ['Gözləyən iş yoxdur'],
+      vuseraCanDo: vuseraCanDo.length > 0 ? vuseraCanDo : ['Hazırda VUSERA-nın icra edə biləcəyi iş yoxdur'],
+      delegatableEmailCount: nonUrgentEmails.length
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/proactive-suggestion/:employeeId', requireAuth, async (req, res) => {
   try {
     const employee = req.employee;
