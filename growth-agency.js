@@ -21,7 +21,7 @@ function scenario(lead) {
 }
 
 function fallbackDraft(lead) {
-  return `Salam. ${lead.company_name} üçün gündəlik email, sənəd və təsdiq proseslərini bir iş sahəsində idarə edən VUSERA-nın qısa demosunu hazırlamışıq. Demo ümumi təqdimat deyil — ${scenario(lead).toLowerCase()} ssenarisini canlı göstərəcəyəm. Bu həftə 15 dəqiqəlik görüş üçün uyğun vaxtınız varmı?`;
+  return `Salam, ${lead.company_name} komandası. Mən VUSERA-nın təsisçisi Vüsal Əzizliyəm. VUSERA gündəlik email, sənəd və təsdiq proseslərini vahid AI işçi üzərindən idarə etməyə kömək edir. Sizin üçün ${scenario(lead).toLowerCase()} ssenarisinə uyğun qısa demo hazırlamaq istərdim. Bu həftə 15 dəqiqəlik görüş üçün uyğun vaxtınız varmı?\n\nHörmətlə,\nVüsal Əzizli\nFounder, VUSERA\nvusera.tech`;
 }
 
 function parseJson(text) {
@@ -46,7 +46,24 @@ async function tenantLead(db, id, companyId) {
 }
 
 async function createCopy(anthropic, lead, objective) {
-  const prompt = `Azərbaycan B2B bazarı üçün qısa satış mesajı hazırla. Fakt uydurma, şişirtmə və zəmanət vermə. Maksimum 90 söz. Məqsəd 15 dəqiqəlik uyğunlaşdırılmış demo almaqdır.\nŞirkət: ${lead.company_name}\nSektor: ${lead.sector || 'bilinmir'}\nƏlaqəli şəxs: ${lead.contact_name || 'bilinmir'}\nVəzifə: ${lead.contact_role || 'bilinmir'}\nKanal: ${lead.primary_channel || 'LinkedIn'}\nPilot: ${lead.pilot_scenario || scenario(lead)}\nMəqsəd: ${objective || 'İlk əlaqə'}\nYalnız JSON qaytar: {"subject":"email mövzusu və ya boş","body":"mesaj","risk_level":"low və ya medium"}`;
+  const prompt = `Azərbaycan B2B bazarı üçün VUSERA adından qısa satış mesajı hazırla.
+
+MƏCBURİ ROLLAR:
+- Göndərən həmişə Vüsal Əzizli, Founder, VUSERA-dır.
+- Məktubu alan potensial müştəri ${lead.company_name}-dir.
+- Heç vaxt ${lead.company_name} adından yazma və onun xidmətlərini bizim təklifimiz kimi təqdim etmə.
+- Satılan məhsul yalnız VUSERA AI işçisidir.
+- İmza həmişə "Vüsal Əzizli\\nFounder, VUSERA\\nvusera.tech" olmalıdır.
+
+Fakt uydurma, şişirtmə, zəmanət və yoxlanmamış nəticə vermə. Maksimum 120 söz. Məqsəd 15 dəqiqəlik uyğunlaşdırılmış demo almaqdır.
+Alıcı şirkət: ${lead.company_name}
+Sektor: ${lead.sector || 'bilinmir'}
+Əlaqəli şəxs: ${lead.contact_name || 'bilinmir'}
+Vəzifə: ${lead.contact_role || 'bilinmir'}
+Kanal: ${lead.primary_channel || 'LinkedIn'}
+Pilot: ${lead.pilot_scenario || scenario(lead)}
+Məqsəd: ${objective || 'İlk əlaqə'}
+Yalnız JSON qaytar: {"subject":"email mövzusu və ya boş","body":"mesaj","risk_level":"low və ya medium"}`;
   const response = await anthropic.messages.create({ model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6', max_tokens: 450, temperature: 0.3, messages: [{ role: 'user', content: prompt }] });
   const result = parseJson(response.content?.find(x => x.type === 'text')?.text || '');
   return { ...result, usage: response.usage };
@@ -62,8 +79,11 @@ function leadPayload(body, employee) {
     contact_name: clean(body.contactName, 120),
     contact_role: clean(body.contactRole, 120),
     contact_email: clean(body.contactEmail, 254).toLowerCase() || null,
+    contact_phone: clean(body.contactPhone, 80) || null,
+    linkedin_url: clean(body.linkedinUrl, 500) || null,
     primary_channel: clean(body.primaryChannel, 80) || 'LinkedIn',
     website: clean(body.website, 500) || null,
+    notes: clean(body.notes, 3000),
     why_fit: clean(body.whyFit),
     pilot_scenario: clean(body.pilotScenario),
     status: STATUSES.has(body.status) ? body.status : 'Əlaqə qurulmayıb',
@@ -132,7 +152,7 @@ export function registerGrowthAgencyRoutes({ app, supabase, anthropic, requireAu
     try {
       const lead = await tenantLead(supabase, req.params.id, req.employee.company_id);
       if (!lead) return res.status(404).json({ error: 'Lead tapılmadı' });
-      const fields = { priority: 'priority', companyName: 'company_name', sector: 'sector', contactName: 'contact_name', contactRole: 'contact_role', contactEmail: 'contact_email', primaryChannel: 'primary_channel', website: 'website', whyFit: 'why_fit', pilotScenario: 'pilot_scenario', status: 'status', nextStep: 'next_step', demoAt: 'demo_at' };
+      const fields = { priority: 'priority', companyName: 'company_name', sector: 'sector', contactName: 'contact_name', contactRole: 'contact_role', contactEmail: 'contact_email', contactPhone: 'contact_phone', linkedinUrl: 'linkedin_url', primaryChannel: 'primary_channel', website: 'website', notes: 'notes', whyFit: 'why_fit', pilotScenario: 'pilot_scenario', status: 'status', nextStep: 'next_step', demoAt: 'demo_at' };
       const updates = {};
       for (const [input, column] of Object.entries(fields)) if (req.body[input] !== undefined) {
         if (input === 'priority' && !PRIORITIES.has(req.body[input])) return res.status(400).json({ error: 'Yanlış prioritet' });
@@ -155,6 +175,30 @@ export function registerGrowthAgencyRoutes({ app, supabase, anthropic, requireAu
       if (error) throw error;
       await activity(supabase, req.employee, 'lead_deleted', `${lead.company_name} silindi`, { lead_id: lead.id });
       res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post('/growth/leads/discover', aiLimit, requireAuth, requirePlatformOwner, async (req, res) => {
+    try {
+      const limit = Math.min(Math.max(Number(req.body.limit) || 10, 1), 20);
+      const sectors = clean(req.body.sectors, 500) || 'təhsil, logistika, turizm, peşəkar xidmətlər və orta ölçülü B2B şirkətlər';
+      const { data: existing, error: existingError } = await supabase.from('growth_leads').select('company_name').eq('company_id', req.employee.company_id);
+      if (existingError) throw existingError;
+      const existingNames = (existing || []).map(x => x.company_name).filter(Boolean);
+      const prompt = `VUSERA üçün Azərbaycan bazarında ${limit} real B2B lead namizədi hazırla. Sektorlar: ${sectors}.
+VUSERA email, sənəd, daxili sorğu, görüş, təsdiq və iş axınlarını idarə edən AI işçidir.
+Artıq bazada olanları təkrarlama: ${existingNames.join(', ') || 'yoxdur'}.
+Yalnız mövcud olduğuna yüksək əmin olduğun şirkətləri yaz. Şəxsi məlumat uydurma. Email, telefon, LinkedIn və sayt dəqiq bilinmirsə boş saxla. Hər lead Araşdırılır statusunda olmalıdır.
+Yalnız JSON qaytar: {"leads":[{"companyName":"","sector":"","priority":"A|B|C","contactName":"","contactRole":"","contactEmail":"","contactPhone":"","linkedinUrl":"","website":"","primaryChannel":"LinkedIn|Email|Instagram|Telefon","whyFit":"","pilotScenario":"","notes":"Avtomatik tapılıb; əlaqə məlumatları göndərmədən əvvəl yoxlanmalıdır"}]}`;
+      const response = await anthropic.messages.create({ model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6', max_tokens: 2400, temperature: 0.2, messages: [{ role: 'user', content: prompt }] });
+      const parsed = parseJson(response.content?.find(x => x.type === 'text')?.text || '');
+      const known = new Set(existingNames.map(x => x.trim().toLowerCase()));
+      const rows = (Array.isArray(parsed.leads) ? parsed.leads : []).map(x => leadPayload({ ...x, status: 'Araşdırılır', nextStep: 'Əlaqə məlumatlarını yoxla' }, req.employee)).filter(x => x.company_name && !known.has(x.company_name.toLowerCase())).slice(0, limit);
+      if (!rows.length) return res.json({ imported: 0, leads: [], message: 'Yeni unikal lead tapılmadı' });
+      const { data, error } = await supabase.from('growth_leads').insert(rows).select();
+      if (error) throw error;
+      await activity(supabase, req.employee, 'leads_discovered', `${data.length} lead avtomatik tapılıb pipeline-a əlavə edildi`);
+      res.status(201).json({ imported: data.length, leads: data });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
