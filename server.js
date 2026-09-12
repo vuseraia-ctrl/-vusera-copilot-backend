@@ -656,10 +656,16 @@ app.post('/ask', askLimiter, requireAuth, async (req, res) => {
     const conversationMessages = [];
     if (history && history.length > 0) {
       // Ən köhnədən ən yeniyə doğru sırala (Claude-a düzgün xronoloji ardıcıllıqla veririk)
-      for (const h of history.reverse()) {
+      // Token qənaəti üçün: KÖHNƏ cavabları qısaldırıq (yalnız son 2 cütü tam saxlayırıq),
+      // çünki köhnə cavabların TAM detalı (mənbə sitatları, uzun izahlar) adətən lazım olmur —
+      // yalnız "nə haqqında danışdığımız" kontekst kifayətdir.
+      const reversedHistory = history.reverse();
+      reversedHistory.forEach((h, idx) => {
+        const isRecent = idx >= reversedHistory.length - 2; // son 2 cüt tam qalır
+        const answerText = isRecent ? h.answer : (h.answer.length > 200 ? h.answer.slice(0, 200) + '… (qısaldılıb)' : h.answer);
         conversationMessages.push({ role: 'user', content: h.question });
-        conversationMessages.push({ role: 'assistant', content: h.answer });
-      }
+        conversationMessages.push({ role: 'assistant', content: answerText });
+      });
     }
     conversationMessages.push({ role: 'user', content: question });
 
