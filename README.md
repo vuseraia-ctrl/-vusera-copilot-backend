@@ -89,3 +89,12 @@ Pulsuz seçimlər: **Render.com** və ya **Railway.app**
 - Frontend-i (bugünkü demo HTML-i) bu real API-yə bağlamaq
 - Make.com ilə əməliyyat sorğularını (leave_request və s.) real Google Calendar/HR sistemə bağlamaq
 - Admin dashboard (chat_logs cədvəlindən "top questions" analitikası)
+
+## AI Growth Agency
+
+1. Supabase SQL Editor-də `growth-agency.sql` faylını bir dəfə başladın.
+2. Render-də `ANTHROPIC_MODEL` və `GROWTH_DAILY_SEND_LIMIT` dəyişənlərini əlavə edin.
+3. Serveri deploy etdikdən sonra `GROWTH_ENDPOINTS.md` üzrə endpointləri test edin.
+4. `growth-leads-seed.json` faylındakı `leads` massivini `POST /growth/leads/import` endpointinə göndərərək ilkin 30 şirkəti idxal edin.
+
+Xarici əməliyyatlar təhlükəsizdir: draft əvvəlcə yaradılır, ayrıca təsdiqlənir və yalnız bundan sonra göndərilə bilər. Cold-email yalnız Admin, açıq `confirmFirstContact: true` təsdiqi və gündəlik limitlə işləyir. LinkedIn və Instagram avtomatik göndərilmir.
