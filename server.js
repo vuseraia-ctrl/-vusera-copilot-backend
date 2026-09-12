@@ -194,6 +194,14 @@ const TIME_SAVED_MINUTES = { leave_request: 12, it_ticket: 18, expense_request: 
 function isSimpleGreeting(text) {
   const t = text.trim().toLowerCase();
   if (t.length > 60) return false; // uzun mesajlar hec vaxt "sade chat" hesab edilmir
+  // VACIB: tesdiq/redd sozleri, HEC VAXT Haiku-ya getmemelidir - bunlar, 2-addimli
+  // ACTION yaratma prosesinin EN KRITIK addimidir (JSON deqiqliyi teleb edir)
+  const confirmationWords = [
+    'bəli', 'beli', 'hə', 'he', 'təsdiq', 'tesdiq', 'yox', 'xeyr', 'ləğv', 'legv',
+    'yes', 'no', 'confirm', 'approve', 'reject'
+  ];
+  const confirmationRegex = new RegExp(`\\b(${confirmationWords.join('|')})\\b`, 'i');
+  if (confirmationRegex.test(t)) return false;
   const workKeywords = [
     'məzuniyyət', 'mezuniyyet', 'ticket', 'sorğu', 'sorgu', 'sənəd', 'senedi', 'sened',
     'hesabat', 'təsdiq', 'tesdiq', 'email', 'görüş', 'gorush', 'meeting', 'xərc', 'xerc',
