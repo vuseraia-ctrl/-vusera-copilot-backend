@@ -188,6 +188,22 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 // Her tapsiriq novu ucun, senaye ortalamasina esaslanan, teqribi qenaet (deqiqe)
 const TIME_SAVED_MINUTES = { leave_request: 12, it_ticket: 18, expense_request: 15, send_email: 8, create_meeting: 10, generate_report: 25, compare_documents: 20, meeting_prep: 15, send_message: 3, cancel_meeting: 5 };
 
+// Sade, EHTIYATLI bir tesnifat: yalnix ACHIQ-AYDIN sade mesajlari (salamlaşma ve s.)
+// ucuz Haiku modelinə yönləndirir. Hər hansı bir şübhə olduqda, TƏHLÜKƏSİZ tərəf kimi
+// Sonnet-də qalır — keyfiyyətdən güzəştə getmirik.
+function isSimpleGreeting(text) {
+  const t = text.trim().toLowerCase();
+  if (t.length > 25) return false; // uzun mesajlar hec vaxt "sade" hesab edilmir
+  const simplePatterns = [
+    /^salam,?\s*(necesen|necəsən|vusera)?[!.?]*$/i,
+    /^(hi|hello|hey)[!.?]*$/i,
+    /^(sag ?ol|sağ ?ol|tesekk[uü]r[l]?[eə]r?)[!.?]*$/i,
+    /^(thanks|thank you)[!.?]*$/i,
+    /^(bye|sagolun|görüşərik)[!.?]*$/i
+  ];
+  return simplePatterns.some(p => p.test(t));
+}
+
 // Sadə UUID format yoxlaması (yanlış ID-lərə aydın xəta vermək üçün)
 function isValidUUID(str) {
   return typeof str === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
@@ -588,7 +604,7 @@ app.post('/ask', askLimiter, requireAuth, async (req, res) => {
     // ETİK QAYDA: yalnız Admin real səbəbi (ödəniş) görür, adi işçilərə maliyyə statusu açıqlanmır
     const { data: companyStatus } = await supabase
       .from('companies')
-      .select('subscription_status')
+      .select('subscription_status, plan_name')
       .eq('id', employee.company_id)
       .single();
     if (companyStatus && (companyStatus.subscription_status === 'cancelled' || companyStatus.subscription_status === 'past_due')) {
@@ -599,6 +615,24 @@ app.post('/ask', askLimiter, requireAuth, async (req, res) => {
               ? 'Abunəlik ləğv edilib. Davam etmək üçün VUSERA ilə əlaqə saxlayın.'
               : 'Ödəniş gecikib. Xidmətə davam etmək üçün ödənişi tamamlayın.')
           : 'VUSERA hazırda müvəqqəti əlçatan deyil. Zəhmət olmasa Admin ilə əlaqə saxlayın.'
+      });
+    }
+
+    // 1.6) AYLIQ İSTİFADƏ LİMİTİ — plan növünə görə (Premium, Business-dən 2 dəfə çox limitə malikdir)
+    const MONTHLY_QUERY_LIMITS = { Premium: 6000, Business: 3000 };
+    const monthlyLimit = MONTHLY_QUERY_LIMITS[companyStatus?.plan_name] || MONTHLY_QUERY_LIMITS.Business;
+    const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
+    const { count: monthlyUsageCount } = await supabase
+      .from('chat_logs')
+      .select('*', { count: 'exact', head: true })
+      .eq('company_id', employee.company_id)
+      .gte('created_at', startOfMonth);
+    if (monthlyUsageCount !== null && monthlyUsageCount >= monthlyLimit) {
+      const isAdminViewer = employee.role === 'Admin';
+      return res.status(429).json({
+        error: isAdminViewer
+          ? `Bu ay üçün sorğu limitinə (${monthlyLimit}) çatılıb. Limitin artırılması üçün VUSERA ilə əlaqə saxlayın.`
+          : 'VUSERA bu ay üçün istifadə limitinə çatıb. Zəhmət olmasa Admin ilə əlaqə saxlayın.'
       });
     }
 
@@ -808,10 +842,12 @@ ${emailsText ? `SON EMAİLLƏR (Gmail-dən indi oxunub):\n${emailsText}\n` : ''}
 ${directoryText || '(direktoriya boşdur)'}`;
 
     // 6) Claude-dan cavab al (söhbət tarixçəsi ilə birlikdə) — keçici xətalar üçün 1 dəfə təkrar cəhd
+    // Sade salamlaşma/tesekkur mesajlari, ucuz Haiku modeline yonlendirilir - real is/sorgu her zaman Sonnet-de qalir
+    const selectedModel = isSimpleGreeting(question) ? 'claude-haiku-4-5-20251001' : 'claude-sonnet-4-6';
     let message;
     try {
       message = await anthropic.messages.create({
-        model: 'claude-sonnet-4-6',
+        model: selectedModel,
         max_tokens: 500,
         system: [
           { type: 'text', text: staticInstructions, cache_control: { type: 'ephemeral' } },
@@ -825,7 +861,7 @@ ${directoryText || '(direktoriya boşdur)'}`;
       try {
         await new Promise(r => setTimeout(r, 700));
         message = await anthropic.messages.create({
-          model: 'claude-sonnet-4-6',
+          model: selectedModel,
           max_tokens: 500,
           system: [
             { type: 'text', text: staticInstructions, cache_control: { type: 'ephemeral' } },
