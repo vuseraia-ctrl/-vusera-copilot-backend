@@ -9,6 +9,7 @@ Bütün endpointlər `Authorization: Bearer <token>` və və mövcud `x-api-secr
 | GET | `/growth/leads` | Lead siyahısı və filtrlər |
 | POST | `/growth/leads` | Yeni lead |
 | POST | `/growth/leads/import` | Maksimum 100 lead idxalı |
+| POST | `/growth/leads/discover` | AI ilə maksimum 20 yeni lead namizədi tap və `Araşdırılır` statusunda əlavə et |
 | PATCH | `/growth/leads/:id` | Lead/status yeniləmə |
 | DELETE | `/growth/leads/:id` | Lead silmə |
 | POST | `/growth/leads/:id/generate-draft` | Claude ilə fərdi draft |
