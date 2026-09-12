@@ -2230,6 +2230,23 @@ app.post('/actions/:id/reject', requireAuth, async (req, res) => {
 });
 
 // ---- Real Undo — son 5 deqiqe erzinde tesdiq/redd qerarini geri qaytarir ----
+// ---- Real Admin Bildirisi — xeta bas verende, sirketin butun Admin-lerine real bildiris gonderir ----
+app.post('/notify-admin', requireAuth, async (req, res) => {
+  try {
+    const employee = req.employee;
+    const { message } = req.body;
+    const { data: admins } = await supabase.from('employees').select('id').eq('company_id', employee.company_id).eq('role', 'Admin').eq('status', 'active');
+    if (!admins || admins.length === 0) return res.status(404).json({ error: 'Şirkətdə aktiv Admin tapılmadı' });
+
+    for (const admin of admins) {
+      await createNotification(employee.company_id, admin.id, `⚠️ ${employee.name} sistem xətası bildirdi: "${message || 'Ətraflı məlumat yoxdur'}"`, null);
+    }
+    res.json({ success: true, notifiedCount: admins.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/actions/:id/undo', requireAuth, async (req, res) => {
   try {
     const approver = req.employee;
