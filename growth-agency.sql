@@ -13,9 +13,14 @@ create table if not exists growth_leads (
   campaign_id uuid references growth_campaigns(id) on delete set null, created_by uuid references employees(id) on delete set null,
   priority text not null default 'B' check (priority in ('A','B','C')), company_name text not null, sector text,
   contact_name text, contact_role text, contact_email text, primary_channel text not null default 'LinkedIn', website text,
+  contact_phone text, linkedin_url text, notes text,
   why_fit text, pilot_scenario text, status text not null default 'Əlaqə qurulmayıb', next_step text,
   last_contact_at timestamptz, demo_at timestamptz, created_at timestamptz not null default now(), updated_at timestamptz not null default now()
 );
+
+alter table growth_leads add column if not exists contact_phone text;
+alter table growth_leads add column if not exists linkedin_url text;
+alter table growth_leads add column if not exists notes text;
 
 create table if not exists growth_agent_runs (
   id uuid primary key default gen_random_uuid(), company_id uuid not null references companies(id) on delete cascade,
