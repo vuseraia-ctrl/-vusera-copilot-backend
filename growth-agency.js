@@ -185,11 +185,34 @@ export function registerGrowthAgencyRoutes({ app, supabase, anthropic, requireAu
       const { data: existing, error: existingError } = await supabase.from('growth_leads').select('company_name').eq('company_id', req.employee.company_id);
       if (existingError) throw existingError;
       const existingNames = (existing || []).map(x => x.company_name).filter(Boolean);
-      const prompt = `VUSERA üçün Azərbaycan bazarında ${limit} real B2B lead namizədi hazırla. Sektorlar: ${sectors}.
+      const prompt = `Canlı internet axtarışı apararaq VUSERA üçün Azərbaycan bazarında ${limit} real B2B lead namizədi tap. Sektorlar: ${sectors}.
 VUSERA email, sənəd, daxili sorğu, görüş, təsdiq və iş axınlarını idarə edən AI işçidir.
 Artıq bazada olanları təkrarlama: ${existingNames.join(', ') || 'yoxdur'}.
-Yalnız mövcud olduğuna yüksək əmin olduğun şirkətləri yaz. Şəxsi məlumat uydurma. Email, telefon, LinkedIn və sayt dəqiq bilinmirsə boş saxla. Hər lead Araşdırılır statusunda olmalıdır.
-Yalnız JSON qaytar: {"leads":[{"companyName":"","sector":"","priority":"A|B|C","contactName":"","contactRole":"","contactEmail":"","contactPhone":"","linkedinUrl":"","website":"","primaryChannel":"LinkedIn|Email|Instagram|Telefon","whyFit":"","pilotScenario":"","notes":"Avtomatik tapılıb; əlaqə məlumatları göndərmədən əvvəl yoxlanmalıdır"}]}`;
+
+MƏCBURİ SEÇİM QAYDALARI:
+- Yalnız özəl kommersiya şirkətləri; təxminən 10-250 əməkdaş üstünlükdür.
+- Dövlət qurumu, dövlət və özəl universitet, bank, holdinq, iri beynəlxalq audit/konsaltinq şəbəkəsi daxil etmə.
+- Hər şirkətin işləyən rəsmi saytı və həmin rəsmi saytda açıq email və ya telefon olmalıdır.
+- Şəxsi email/telefon uydurma; yalnız açıq korporativ kontakt yaz.
+- Rəsmi LinkedIn səhifəsi dəqiq tapılmırsa boş saxla.
+- VUSERA üçün konkret proses uyğunluğu olmayan şirkəti daxil etmə.
+- Hər məlumatı rəsmi şirkət saytından yoxla. Nəticədə hər şirkət üçün rəsmi mənbə URL-ni göstər.
+
+Nəticəni qısa və strukturlaşdırılmış ver: şirkət, sektor, prioritet, hədəf vəzifə, korporativ email, telefon, LinkedIn, rəsmi sayt, uyğunluq səbəbi, pilot ssenarisi və məlumatın götürüldüyü rəsmi URL.`;
+      const researchResponse = await anthropic.messages.create({
+        model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6',
+        max_tokens: 5000,
+        temperature: 0.1,
+        tools: [{
+          type: 'web_search_20250305',
+          name: 'web_search',
+          max_uses: 5,
+          user_location: { type: 'approximate', city: 'Baku', region: 'Baku', country: 'AZ', timezone: 'Asia/Baku' }
+        }],
+        messages: [{ role: 'user', content: prompt }]
+      });
+      const researchText = (researchResponse.content || []).filter(x => x.type === 'text').map(x => x.text).join('\n').trim();
+      if (!researchText) throw new Error('Canlı axtarış nəticə qaytarmadı. Claude Console-da Web Search-in aktiv olduğunu yoxlayın.');
       const response = await anthropic.messages.create({
         model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6',
         max_tokens: 4096,
@@ -219,13 +242,13 @@ Yalnız JSON qaytar: {"leads":[{"companyName":"","sector":"","priority":"A|B|C",
           }
         }],
         tool_choice: { type: 'tool', name: 'save_growth_leads' },
-        messages: [{ role: 'user', content: prompt }]
+        messages: [{ role: 'user', content: `Aşağıdakı canlı web araşdırmasını strukturlaşdır. Yalnız rəsmi sayt və açıq korporativ kontaktı olan özəl şirkətləri saxla. Dövlət qurumu, universitet, bank, holdinq və iri beynəlxalq audit/konsaltinq şəbəkəsini çıxart. Mənbə URL-ni notes sahəsinə əlavə et. Heç bir məlumat uydurma. Maksimum ${limit} lead qaytar.\n\n${researchText}` }]
       });
       const toolResult = response.content?.find(x => x.type === 'tool_use' && x.name === 'save_growth_leads');
       if (!toolResult?.input || !Array.isArray(toolResult.input.leads)) throw new Error('Lead siyahısı strukturlaşdırılmış formada alınmadı. Yenidən cəhd edin.');
       const parsed = toolResult.input;
       const known = new Set(existingNames.map(x => x.trim().toLowerCase()));
-      const rows = (Array.isArray(parsed.leads) ? parsed.leads : []).map(x => leadPayload({ ...x, status: 'Araşdırılır', nextStep: 'Əlaqə məlumatlarını yoxla' }, req.employee)).filter(x => x.company_name && !known.has(x.company_name.toLowerCase())).slice(0, limit);
+      const rows = (Array.isArray(parsed.leads) ? parsed.leads : []).map(x => leadPayload({ ...x, status: 'Araşdırılır', nextStep: 'Rəsmi əlaqə məlumatını nəzərdən keçir', notes: `${x.notes || ''}\nCanlı web axtarışı ilə tapılıb; göndərmədən əvvəl owner təsdiqi tələb olunur.` }, req.employee)).filter(x => x.company_name && x.website && (x.contact_email || x.contact_phone) && !known.has(x.company_name.toLowerCase())).slice(0, limit);
       if (!rows.length) return res.json({ imported: 0, leads: [], message: 'Yeni unikal lead tapılmadı' });
       const { data, error } = await supabase.from('growth_leads').insert(rows).select();
       if (error) throw error;
