@@ -877,6 +877,10 @@ ${directoryText || '(direktoriya boşdur)'}`;
     }
 
     let answerText = message.content.map(b => b.text || '').join('');
+    // DIAQNOSTIKA: Prompt Caching-in real isleyib-islemediyini derhal Render logларinda goremek ucun
+    if (message.usage) {
+      console.log(`[CACHE DEBUG] cache_creation: ${message.usage.cache_creation_input_tokens || 0}, cache_read: ${message.usage.cache_read_input_tokens || 0}, input: ${message.usage.input_tokens}, model: ${selectedModel}`);
+    }
     let sourceType = 'answer';
     let createdAction = null;
 
