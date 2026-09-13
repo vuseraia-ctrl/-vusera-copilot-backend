@@ -1,3 +1,24 @@
+<div align="center">
+
+# VUSERA — AI Employee for Business Automation
+
+**An AI employee that manages email, calendar, CRM, documents, approvals and repetitive business workflows.**
+
+[Website](https://vuseraa.netlify.app/) · [LinkedIn](https://www.linkedin.com/company/vusera/) · [Instagram](https://www.instagram.com/hello.vusera/) · [Contact](mailto:hello.vusera@hotmail.com)
+
+Built in Baku, Azerbaijan 🇦🇿
+
+</div>
+
+---
+
+## About This Repository
+
+This is the official backend for **VUSERA**, a real Retrieval-Augmented Generation (RAG) system that reads a company's documents, applies role-based permissions, and answers employee questions using Claude — while executing approved workflows (leave requests, IT tickets, expense approvals, meeting scheduling, and more) across Gmail, Google Calendar, Slack, and HubSpot.
+
+For the product itself, visit **[vuseraa.netlify.app](https://vuseraa.netlify.app/)**.
+
+---
 # VUSERA Employee Copilot — Backend
 
 Real RAG (Retrieval-Augmented Generation) sistemi: şirkət sənədlərini "başa düşür", rol-əsaslı icazə tətbiq edir, Claude ilə cavab verir.
